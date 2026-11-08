@@ -13,12 +13,14 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 4     | Markings, save/load, OSM                                           | done        |
 | 5     | Cars, sensors, damage, traffic, navigation                         | done        |
 | 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | done        |
-| 7     | 3D renderer foundation                                             | pending     |
+| 7     | 3D renderer foundation                                             | done        |
 | 8     | 3D polish, pre-trained brain, turbo worker                         | pending     |
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 7, 3D renderer foundation (lazy Three.js chunk, instancing, camera rig, picking).
+**Next:** Phase 8, 3D polish (sensor rays, 3D markings, day/night with sky and headlights, bloom and
+quality presets with auto-downgrade, 3D particles and skid trail, settings panel, turbo trainer worker,
+pre-trained brain).
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -240,6 +242,34 @@ final Definition of Done audit. Tag `v1.0.0`.
 - Performance fix found by profiling: the world-sized skid decal canvas was resampled every frame
   (about 10 ms in software rendering); replaced by sparse 512-unit tiles that exist only where
   marks are. Simulate-mode render time went from 11.4 ms to 1.4 ms.
+
+### Phase 7 (2026-11-07)
+
+- `npm run verify`: typecheck 0, lint 0, 23 test files / 224 tests, build OK, e2e 14 passed.
+- Build: initial chunk 231.43 kB (gzip 75.36 kB); the 3D view is a separate on-demand chunk
+  `threeRenderer-*.js` 620.80 kB (gzip 158.07 kB) loaded by `import()` the first time V is pressed.
+- e2e `sim3d.spec.ts` (headless Chromium, renderer string "ANGLE (Google, Vulkan 1.3.0
+  (SwiftShader Device (Subzero)), SwiftShader driver)", WebGL works without extra flags):
+  nothing 3D is loaded before V; V crossfades to the 3D canvas; demo city scene build 32 ms
+  (budget 300 ms); 36 draw calls including the shadow pass (budget 150), 34 006 triangles;
+  camera chips and C cycle chase → orbit → top; picking a traffic car by its projected screen
+  position makes it the focused car; `renderer.info.memory` is 14 geometries / 7 textures after 1
+  and after 4 rebuilds (no leaks); V returns to 2D and the editor adds points again. A second test
+  removes WebGL (`getContext` returns null): the app shows the "3D view unavailable" toast, stays in
+  2D, and logs no console errors.
+- Screenshot `phase-7-sim-3d-day.png`: aerial three-quarter view of the demo city in Simulate mode:
+  instanced buildings with tiled window facades and pitched roofs, conifer cones and broadleaf
+  icospheres, sidewalks, dashed centre lines and solid edges, traffic cars (amber, pink) and the
+  cyan AI car with wheels and lights, soft sun shadows, the minimap showing the camera footprint,
+  camera chips bottom right.
+- Visual review fixes before committing: the first 3D frame read as night because the textures
+  reused the dark 2D palette (now a daylight palette); car cabins rendered black (metal without an
+  environment map); hidden camera chips stayed focusable (now `visibility: hidden`).
+- Bug found from the screenshot's HUD: in Simulate mode the AI demo car spawned on top of the manual
+  car and crashed on every respawn (generation 417 after 20 s). The manual car now waits 1.5 car
+  lengths behind the Start; regression test `sim/simulate mode demo car`.
+- Other e2e numbers this run: 2D Simulate frame 17.7 ms, 2D Train with 300 AI cars 36.6 ms
+  (software rendering), drag in a 325-segment world 17.6 ms average.
 
 ## Known issues
 

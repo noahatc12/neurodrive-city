@@ -1223,3 +1223,64 @@ input[type='range'] {
 .nn-stats dd {
   white-space: nowrap;
 }
+
+/* ==========================================================================
+   3D view: stacked canvases with a crossfade, camera chips, pick tooltip
+   ========================================================================== */
+.stage-canvas {
+  transition: opacity 380ms var(--ease-out);
+}
+.stage[data-view='3d'] .stage-2d,
+.stage:not([data-view='3d']) .stage-3d {
+  opacity: 0;
+  pointer-events: none;
+}
+.stage[data-view='3d'] {
+  cursor: grab;
+}
+.stage[data-view='3d'].pick-car {
+  cursor: pointer;
+}
+.camera-chips {
+  position: absolute;
+  right: 10px;
+  bottom: 196px;
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  z-index: 15;
+  transition:
+    opacity var(--dur) var(--ease-out),
+    translate var(--dur) var(--ease-out);
+}
+.app:not([data-mode='edit']) .camera-chips {
+  right: 320px;
+  bottom: 12px;
+}
+.camera-chips.hidden {
+  opacity: 0;
+  translate: 0 12px;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity var(--dur) var(--ease-out),
+    translate var(--dur) var(--ease-out),
+    visibility 0s linear var(--dur);
+}
+.pick-tip {
+  position: absolute;
+  z-index: 18;
+  padding: 4px 9px;
+  font-size: 12px;
+  pointer-events: none;
+  translate: 12px 14px;
+  white-space: nowrap;
+}
+.pick-tip[hidden] {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage-canvas {
+    transition-duration: 120ms;
+  }
+}

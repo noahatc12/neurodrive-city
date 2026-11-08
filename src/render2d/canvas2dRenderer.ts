@@ -82,7 +82,7 @@ export class Canvas2DRenderer implements Renderer {
   constructor(viewport: Viewport) {
     this.viewport = viewport;
     this.canvas = document.createElement('canvas');
-    this.canvas.className = 'stage-canvas';
+    this.canvas.className = 'stage-canvas stage-2d';
     this.canvas.setAttribute('aria-label', 'City view');
     this.canvas.setAttribute('role', 'img');
     const ctx = this.canvas.getContext('2d', { alpha: false });

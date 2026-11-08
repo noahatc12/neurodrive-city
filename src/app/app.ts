@@ -42,6 +42,8 @@ import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
 import type { SimHost } from '../engine/sim/host.ts';
 import type { Car } from '../engine/car/car.ts';
 import { Sensor } from '../engine/car/sensor.ts';
+import type { ThreeRenderer } from '../render3d/threeRenderer.ts';
+import { CameraChips, nextCameraMode } from '../ui/cameraChips.ts';
 
 const BRAIN_KEY = 'nd:brain';
 import { h } from '../ui/dom.ts';
@@ -56,6 +58,8 @@ import { MainLoop, type FrameInfo } from './loop.ts';
 import {
   DEFAULT_LAYERS,
   type AppMode,
+  type CameraMode,
+  type PickResult,
   type FrameContext,
   type LayerFlags,
   type ToolId,
@@ -172,6 +176,19 @@ export class App {
   private statusTick = 0;
   private spaceUsedForPan = false;
   private ready = false;
+  /** Active view; the 3D renderer is loaded on first use (dynamic import). */
+  view: '2d' | '3d' = '2d';
+  renderer3d: ThreeRenderer | null = null;
+  private loading3d: Promise<ThreeRenderer | null> | null = null;
+  /** Both renderers draw until this clock time while the canvases crossfade. */
+  private fadeUntil = 0;
+  private clockMs = 0;
+  cameraMode: CameraMode = 'orbit';
+  private readonly cameraChips: CameraChips;
+  private readonly pickTip: HTMLElement;
+  /** Car chosen by clicking it in 3D (camera, sensors and network panel follow it). */
+  private pickedCarId: number | null = null;
+  private pickDown: { x: number; y: number } | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -256,6 +273,10 @@ export class App {
       onGrid: () => this.toggleGrid(),
     });
     this.help = new HelpOverlay();
+    this.cameraChips = new CameraChips((m) => this.setCameraMode(m));
+    this.cameraChips.set(this.cameraMode);
+    this.pickTip = h('div', { class: 'pick-tip glass', role: 'tooltip' });
+    this.pickTip.hidden = true;
     this.fileInput = h('input', {
       type: 'file',
       class: 'sr-only',
@@ -278,6 +299,8 @@ export class App {
         this.statusbar.el,
         this.toaster.el,
         this.minimap.el,
+        this.cameraChips.el,
+        this.pickTip,
         this.hud.el,
         this.nnPanel.el,
         this.progress.el,
@@ -287,7 +310,7 @@ export class App {
     );
     this.toolbar.setActive('graph');
 
-    this.topbar.view.setDisabled('3d', true, '3D view arrives in a later build');
+    this.stage.dataset.view = '2d';
 
     this.worldManager = new WorldManager({
       onProgress: (f, stage) => {
@@ -303,7 +326,10 @@ export class App {
         this.toast('World generation failed', { kind: 'error', details: [msg] });
       },
     });
-    this.minimap.onNavigate = (w) => this.viewport.panTo(w);
+    this.minimap.onNavigate = (w) => {
+      if (this.view === '3d' && this.renderer3d) this.renderer3d.panTo(w);
+      else this.viewport.panTo(w);
+    };
     this.osmDialog = new OsmDialog({
       onImport: (text, opts) => void this.importOsmText(text, opts),
       loadSampleText: () => this.fetchText('worlds/osm-sample.osm.json'),
@@ -412,10 +438,14 @@ export class App {
     frame.route = sim && !this.infinite ? this.simRoute : null;
     if (focus) this.viewport.follow(focus.lerpX(f.alpha), focus.lerpY(f.alpha), f.dtMs / 1000);
     if (this.mode !== 'edit') this.updatePanel(f, focus);
+    this.clockMs = f.timeMs;
+    const fading = f.timeMs < this.fadeUntil;
+    const r3 = this.renderer3d;
     const r0 = performance.now();
-    this.renderer2d.render(frame);
+    if (this.view === '2d' || fading) this.renderer2d.render(frame);
+    if (r3 && (this.view === '3d' || fading)) r3.render(frame);
     this.stats.recordRender(performance.now() - r0);
-    this.stats.drawCalls = this.renderer2d.drawCalls;
+    this.stats.drawCalls = this.view === '3d' && r3 ? r3.drawCalls : this.renderer2d.drawCalls;
     if (this.layers.minimap && !this.infinite) this.renderMinimap(f.timeMs);
     this.stats.record(f.dtMs, f.simCostMs);
     if (f.timeMs - this.statusTick > 100) {
@@ -444,6 +474,7 @@ export class App {
     const r = this.stage.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.renderer2d.resize(r.width, r.height, dpr);
+    this.renderer3d?.resize(r.width, r.height, dpr);
     const narrow = r.width < 900;
     this.minimap.resize(narrow ? 160 : 230, narrow ? 116 : 160, dpr);
   }
@@ -604,6 +635,11 @@ export class App {
     const sim = this.sim;
     const pop = this.population;
     if (!sim) return null;
+    if (this.pickedCarId !== null) {
+      const picked = sim.getCar(this.pickedCarId);
+      if (picked && picked.active) return picked;
+      this.pickedCarId = null;
+    }
     if (this.mode === 'train' || this.infinite) return pop ? pop.bestCar : null;
     if (this.focusAi && pop) return pop.cars[0] ?? null;
     return sim.manual ?? pop?.cars[0] ?? null;
@@ -822,16 +858,9 @@ export class App {
   }
 
   private renderMinimap(timeMs: number): void {
-    const b = this.viewport.visibleBounds();
     const c = this.viewCorners;
-    (c[0] as Vec2).x = b.minX;
-    (c[0] as Vec2).y = b.minY;
-    (c[1] as Vec2).x = b.maxX;
-    (c[1] as Vec2).y = b.minY;
-    (c[2] as Vec2).x = b.maxX;
-    (c[2] as Vec2).y = b.maxY;
-    (c[3] as Vec2).x = b.minX;
-    (c[3] as Vec2).y = b.maxY;
+    if (this.view === '3d' && this.renderer3d) this.renderer3d.footprint(c);
+    else this.viewRect(c);
     const best = this.population && this.mode === 'train' ? this.population.bestCar : null;
     if (best) {
       this.bestPos.x = best.x;
@@ -849,6 +878,19 @@ export class App {
       route: null,
       timeMs,
     });
+  }
+
+  /** Writes the 2D viewport rectangle into the 4 reused corner points. */
+  private viewRect(c: Vec2[]): void {
+    const b = this.viewport.visibleBounds();
+    (c[0] as Vec2).x = b.minX;
+    (c[0] as Vec2).y = b.minY;
+    (c[1] as Vec2).x = b.maxX;
+    (c[1] as Vec2).y = b.minY;
+    (c[2] as Vec2).x = b.maxX;
+    (c[2] as Vec2).y = b.maxY;
+    (c[3] as Vec2).x = b.minX;
+    (c[3] as Vec2).y = b.maxY;
   }
 
   /** Packs car positions for the minimap (reused buffers). */
@@ -915,13 +957,139 @@ export class App {
   }
 
   setView(view: '2d' | '3d'): void {
-    if (view === '3d') {
-      this.toast('3D view arrives in a later build', { kind: 'info' });
-      this.topbar.view.set('2d');
+    void this.switchView(view);
+  }
+
+  /** Switches between the 2D and 3D views with a canvas crossfade. */
+  async switchView(view: '2d' | '3d'): Promise<boolean> {
+    if (view === this.view) {
+      this.topbar.view.set(view);
+      return true;
     }
+    if (view === '3d') {
+      const r = await this.ensure3d();
+      if (!r) {
+        this.topbar.view.set('2d');
+        return false;
+      }
+      this.editor.cancel();
+      this.editor.detach();
+      r.setCameraMode(this.cameraMode);
+    } else {
+      this.editor.attach(this.stage);
+      this.pickTip.hidden = true;
+      this.stage.classList.remove('pick-car');
+    }
+    this.view = view;
+    this.stage.dataset.view = view;
+    this.fadeUntil = this.clockMs + (this.reducedMotion ? 150 : 450);
+    this.topbar.view.set(view);
+    this.cameraChips.show(view === '3d');
+    this.stage.setAttribute(
+      'aria-label',
+      view === '3d'
+        ? '3D city view. Drag to orbit, wheel to zoom, click a car to follow it.'
+        : 'World view. Use the tools to edit roads.',
+    );
+    return true;
+  }
+
+  /** Loads the 3D renderer on first use; on WebGL failure toasts and stays in 2D. */
+  private ensure3d(): Promise<ThreeRenderer | null> {
+    if (this.renderer3d) return Promise.resolve(this.renderer3d);
+    this.loading3d ??= (async (): Promise<ThreeRenderer | null> => {
+      const stop = this.toaster.show('Loading the 3D view…', { kind: 'info' });
+      try {
+        if (!webglAvailable()) throw new Error('WebGL 2 is not available in this browser');
+        const mod = await import('../render3d/threeRenderer.ts');
+        const r = new mod.ThreeRenderer();
+        r.mount(this.stage);
+        const rect = this.stage.getBoundingClientRect();
+        r.resize(rect.width, rect.height, Math.min(window.devicePixelRatio || 1, 2));
+        this.attach3dPicking(r);
+        this.renderer3d = r;
+        console.info(`3D renderer: ${r.glRenderer}`);
+        return r;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('3D view unavailable', msg);
+        this.toast('3D view unavailable: WebGL could not start, staying in 2D', {
+          kind: 'error',
+          details: [msg],
+        });
+        return null;
+      } finally {
+        stop();
+        this.loading3d = null;
+      }
+    })();
+    return this.loading3d;
+  }
+
+  /** Hover and click picking on the 3D canvas (spec K11). */
+  private attach3dPicking(r: ThreeRenderer): void {
+    const local = (e: PointerEvent): { x: number; y: number } => {
+      const rect = r.canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+    r.canvas.addEventListener('pointerdown', (e) => {
+      this.pickDown = local(e);
+    });
+    r.canvas.addEventListener('pointermove', (e) => {
+      if (this.view !== '3d' || e.buttons !== 0) return;
+      const p = local(e);
+      const hit = r.pick(p.x, p.y);
+      this.stage.classList.toggle('pick-car', hit?.kind === 'car');
+      const m =
+        hit?.kind === 'marking' && hit.id !== null ? this.model.markings.get(hit.id) : undefined;
+      if (m) {
+        this.pickTip.textContent = `${m.type.charAt(0).toUpperCase()}${m.type.slice(1)} marking`;
+        this.pickTip.style.left = `${p.x}px`;
+        this.pickTip.style.top = `${p.y}px`;
+        this.pickTip.hidden = false;
+      } else this.pickTip.hidden = true;
+    });
+    r.canvas.addEventListener('pointerleave', () => {
+      this.pickTip.hidden = true;
+    });
+    r.canvas.addEventListener('pointerup', (e) => {
+      const d = this.pickDown;
+      this.pickDown = null;
+      if (!d || this.view !== '3d') return;
+      const p = local(e);
+      if (Math.hypot(p.x - d.x, p.y - d.y) > 5) return; // a drag, not a click
+      this.pick3dAt(p.x, p.y);
+    });
+  }
+
+  /** Selects the car under a 3D screen point (or clears the selection on empty ground). */
+  pick3dAt(x: number, y: number): PickResult | null {
+    const r = this.renderer3d;
+    if (!r) return null;
+    const hit = r.pick(x, y);
+    if (hit?.kind === 'car' && hit.id !== null) {
+      this.pickedCarId = hit.id;
+      const car = this.sim?.getCar(hit.id);
+      if (car)
+        this.toast(
+          car.kind === 'ai'
+            ? 'Following this AI car: its network is shown on the right'
+            : 'Following this car',
+        );
+    } else if (hit?.kind === 'ground' && this.pickedCarId !== null) {
+      this.pickedCarId = null;
+    }
+    return hit;
+  }
+
+  setCameraMode(mode: CameraMode): void {
+    this.cameraMode = mode;
+    this.cameraChips.set(mode);
+    this.renderer3d?.setCameraMode(mode);
   }
 
   setTool(id: ToolId): void {
+    if (this.view === '3d') this.setView('2d');
     if (this.mode !== 'edit') this.setMode('edit');
     this.editor.setTool(id);
     this.toolbar.setActive(id);
@@ -1453,7 +1621,17 @@ export class App {
       case 'sim.resetCar':
         if (this.sim instanceof Simulation) this.sim.resetManual();
         break;
+      case 'view.toggle3d':
+        this.setView(this.view === '3d' ? '2d' : '3d');
+        break;
+      case 'view.cycleCamera':
+        if (this.view === '3d') {
+          this.setCameraMode(nextCameraMode(this.cameraMode));
+          this.toast(`Camera: ${this.cameraMode}`);
+        }
+        break;
       case 'view.focusBest':
+        this.pickedCarId = null;
         if (this.mode === 'simulate') this.focusAi = !this.focusAi;
         this.viewport.followPausedUntil = 0;
         break;
@@ -1522,6 +1700,12 @@ export class App {
           this.simGen++;
         },
         enterInfinite: (curvy: boolean) => this.enterInfinite(curvy),
+        setRenderView: (v: '2d' | '3d') => this.switchView(v),
+        setCameraMode: (m: CameraMode) => this.setCameraMode(m),
+        rebuild3d: () => this.renderer3d?.rebuild(),
+        frame3d: (x: number, y: number, radius: number) => this.renderer3d?.rig.frame(x, y, radius),
+        pick3d: (x: number, y: number) => this.pick3dAt(x, y),
+        project3d: (x: number, y: number) => this.renderer3d?.worldToScreen(x, y) ?? null,
         saveBrain: () => this.saveBestBrain(),
         setKeys: (k: Partial<Record<'up' | 'down' | 'left' | 'right', boolean>>) => {
           if (this.sim instanceof Simulation) Object.assign(this.sim.keys, k);
@@ -1592,6 +1776,17 @@ export class App {
         };
       },
       mode: () => this.mode,
+      view: () => this.view,
+      render3d: () => {
+        const r = this.renderer3d;
+        return r ? { loaded: true, ready: r.ready, ...r.stats() } : { loaded: false, ready: false };
+      },
+      focusCarId: () => this.frameCtx.focusCarId,
+      focusCar: () => {
+        const id = this.frameCtx.focusCarId;
+        const c = id !== null ? this.sim?.getCar(id) : undefined;
+        return c ? { id: c.id, x: c.x, y: c.y, kind: c.kind } : null;
+      },
       viewport: () => ({ zoom: this.viewport.zoom, center: { ...this.viewport.center } }),
       history: () => ({ undo: this.history.undoSize, canRedo: this.history.canRedo }),
       editor: () => {
@@ -1606,6 +1801,18 @@ export class App {
     for (const [key, get] of Object.entries(getters))
       Object.defineProperty(hooks, key, { get, enumerable: true });
     Object.defineProperty(window, '__ND__', { value: Object.freeze(hooks), configurable: true });
+  }
+}
+
+/** Probes for a WebGL 2 context (released immediately) before loading Three.js. */
+function webglAvailable(): boolean {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    if (!gl) return false;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
+  } catch {
+    return false;
   }
 }
 

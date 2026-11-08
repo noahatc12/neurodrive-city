@@ -13,7 +13,7 @@
  *
  * @module engine/sim/simulation
  */
-import type { Car } from '../car/car.ts';
+import { DEFAULT_CAR, type Car } from '../car/car.ts';
 import { COLOR_MANUAL, createCar } from '../car/carFactory.ts';
 import { applyKeys, makeKeyState, type KeyState } from '../car/controls.ts';
 import { CollisionWorld, HIT_CAR, HIT_NONE, type CollisionFlags } from '../car/damage.ts';
@@ -107,7 +107,7 @@ export class Simulation implements SimHost {
     if (this.config.manual) {
       const car = createCar(1, 'manual');
       car.color = COLOR_MANUAL;
-      const pose = this.defaultSpawn();
+      const pose = this.manualSpawn();
       car.reset(pose.x, pose.y, pose.angle);
       this.manual = car;
       this.manualSensor = new Sensor(this.config.sensor);
@@ -135,6 +135,16 @@ export class Simulation implements SimHost {
       y: hit.point.y + ux * (rw / 4),
       angle: headingFromDirection(ux, uy),
     };
+  }
+
+  /**
+   * Spawn pose of the manual car: one and a half car lengths behind the first start, so
+   * an AI car spawned at the start itself (Simulate mode's demo car) never overlaps it.
+   */
+  manualSpawn(): SpawnPose {
+    const p = this.defaultSpawn();
+    const back = DEFAULT_CAR.length * 1.5;
+    return { x: p.x + Math.sin(p.angle) * back, y: p.y + Math.cos(p.angle) * back, angle: p.angle };
   }
 
   /** Re-seeds and respawns traffic and restarts the lights for a new generation. */
@@ -231,7 +241,7 @@ export class Simulation implements SimHost {
   /** Respawns the manual car at the start (after a crash, or on request). */
   resetManual(): void {
     if (!this.manual) return;
-    const p = this.defaultSpawn();
+    const p = this.manualSpawn();
     this.manual.reset(p.x, p.y, p.angle);
   }
 

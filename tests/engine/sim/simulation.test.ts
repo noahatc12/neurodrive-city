@@ -7,6 +7,7 @@ import { Sensor } from '../../../src/engine/car/sensor.ts';
 import { parseWorld } from '../../../src/engine/io/serialize.ts';
 import { Particles, SkidMarks, P_SPARK } from '../../../src/engine/sim/particlesSim.ts';
 import { Simulation, type SimExtension } from '../../../src/engine/sim/simulation.ts';
+import { Population } from '../../../src/engine/ai/evolution.ts';
 import { Rng } from '../../../src/engine/math/rng.ts';
 import { generateWorld, worldInputFrom, WorldGeometry } from '../../../src/engine/world/world.ts';
 import type { WorldModel } from '../../../src/engine/world/worldModel.ts';
@@ -89,6 +90,33 @@ describe('sim/manual car and damage', () => {
     expect(sim2.starts).toHaveLength(0);
     const q = sim2.defaultSpawn();
     expect(Number.isFinite(q.x)).toBe(true);
+  });
+});
+
+describe('sim/simulate mode demo car', () => {
+  it('the AI demo car spawned at the start does not overlap the manual car', () => {
+    const { model, geo } = gridTown();
+    const sim = new Simulation(model, geo, { trafficCount: 0, manual: true, seed: 3 });
+    const pop = new Population(sim, {
+      population: 1,
+      mutation: 0,
+      timeLimit: 120,
+      stuckTimeout: 8,
+      seed: 1,
+      resetWorldEachGeneration: false,
+    });
+    sim.setExtension(pop);
+    const ai = pop.cars[0];
+    const manual = sim.manual;
+    expect(ai && manual).toBeTruthy();
+    if (!ai || !manual) return;
+    // the manual car waits 1.5 car lengths behind the start, facing the same way
+    expect(Math.hypot(ai.x - manual.x, ai.y - manual.y)).toBeCloseTo(manual.config.length * 1.5, 5);
+    expect(manual.angle).toBeCloseTo(ai.angle, 9);
+    expect(sim.world.polygonHit(manual.polygon, 1)).toBe(HIT_NONE);
+    for (let i = 0; i < 30; i++) sim.step(DT);
+    expect(sim.damageCount.manual).toBe(0);
+    expect(pop.generation).toBe(1);
   });
 });
 

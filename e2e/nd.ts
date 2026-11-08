@@ -29,6 +29,24 @@ export interface NDHooks {
   geometry: NDGeometry | null;
   minimap: { staticRedraws: number };
   stats: { avgFrameMs: number; fps: number; drawCalls: number };
+  view: '2d' | '3d';
+  focusCarId: number | null;
+  focusCar: { id: number; x: number; y: number; kind: string } | null;
+  render3d: {
+    loaded: boolean;
+    ready: boolean;
+    drawCalls?: number;
+    triangles?: number;
+    geometries?: number;
+    textures?: number;
+    programs?: number;
+    buildMs?: number;
+    builds?: number;
+    cameraMode?: string;
+    camera?: [number, number, number];
+    glRenderer?: string;
+  };
+  sim: { stepCount: number; carCount: number; carPositions: number[][] } | null;
   viewport: { zoom: number; center: { x: number; y: number } };
   history: { undo: number; canRedo: boolean };
   editor: {
@@ -47,6 +65,12 @@ export interface NDHooks {
     setMode(mode: 'edit' | 'simulate' | 'train'): void;
     setSimSpeed(x: number): void;
     setKeys(k: Partial<Record<'up' | 'down' | 'left' | 'right', boolean>>): void;
+    setRenderView(v: '2d' | '3d'): Promise<boolean>;
+    setCameraMode(m: string): void;
+    rebuild3d(): void;
+    frame3d(x: number, y: number, radius: number): void;
+    pick3d(x: number, y: number): { kind: string; id: number | null } | null;
+    project3d(x: number, y: number): { x: number; y: number } | null;
   };
 }
 
