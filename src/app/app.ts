@@ -13,6 +13,11 @@ import type { WorldSettings } from '../engine/world/settings.ts';
 import { WorldModel } from '../engine/world/worldModel.ts';
 import { Canvas2DRenderer } from '../render2d/canvas2dRenderer.ts';
 import { Viewport } from '../render2d/viewport.ts';
+import { Minimap } from '../render2d/minimap.ts';
+import { ProgressOverlay } from '../ui/progressOverlay.ts';
+import { generateDemoCity, type DemoCityOptions } from '../engine/world/demoCity.ts';
+import type { Vec2 } from '../engine/math/vec2.ts';
+import { WorldManager } from './worldManager.ts';
 import { h } from '../ui/dom.ts';
 import { HelpOverlay } from '../ui/panels/helpOverlay.ts';
 import { WorldPanel } from '../ui/panels/worldPanel.ts';
@@ -74,6 +79,18 @@ export class App {
   private readonly worldPanel: WorldPanel;
   private readonly statusbar: Statusbar;
   private readonly help: HelpOverlay;
+  readonly worldManager: WorldManager;
+  readonly minimap = new Minimap();
+  readonly progress = new ProgressOverlay();
+  /** Reused every frame (no per-frame allocation). */
+  private readonly frameCtx: FrameContext;
+  private readonly viewCorners: Vec2[] = [
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+  ];
+  private readonly noTargets: Vec2[] = [];
   private readonly fileInput: HTMLInputElement;
   private autosaveTimer = 0;
   private lastSavedSignature = '';
@@ -151,15 +168,46 @@ export class App {
         h('div', { class: 'left-dock' }, this.toolbar.el, this.worldPanel.el),
         this.statusbar.el,
         this.toaster.el,
+        this.minimap.el,
+        this.progress.el,
         this.help.el,
         this.fileInput,
       ),
     );
     this.toolbar.setActive('graph');
-    for (const id of ['demo', 'ring', 'infinite', 'osm-sample', 'osm-import', 'library'])
+    for (const id of ['ring', 'infinite', 'osm-sample', 'osm-import', 'library'])
       this.topbar.setItemEnabled(id, false);
     this.topbar.view.setDisabled('3d', true, '3D view arrives in a later build');
 
+    this.worldManager = new WorldManager({
+      onProgress: (f, stage) => {
+        if (!this.progress.isActive) this.progress.start('Generating world');
+        this.progress.set(f, `Generating world: ${stage}`);
+      },
+      onWorkerDone: (ms) => {
+        this.progress.done();
+        console.info(`world generated in a worker in ${ms.toFixed(0)} ms`);
+      },
+      onError: (msg) => {
+        this.progress.done();
+        this.toast('World generation failed', { kind: 'error', details: [msg] });
+      },
+    });
+    this.minimap.onNavigate = (w) => this.viewport.panTo(w);
+    this.frameCtx = {
+      model: this.model,
+      geometry: null,
+      geometryStale: true,
+      previewSegmentIds: null,
+      mode: this.mode,
+      editor: null,
+      layers: this.layers,
+      alpha: 1,
+      timeMs: 0,
+      dtMs: 0,
+      focusCarId: null,
+      reducedMotion: this.reducedMotion,
+    };
     this.loop = new MainLoop({ step: () => {}, frame: (f) => this.frame(f) });
     this.bindGlobalEvents();
   }
@@ -202,19 +250,22 @@ export class App {
     const dt = f.dtMs / 1000;
     this.viewport.update(dt);
     this.tweens.update(f.dtMs);
-    const frame: FrameContext = {
-      model: this.model,
-      mode: this.mode,
-      editor: this.mode === 'edit' ? this.editor.overlay(f.timeMs) : null,
-      layers: this.layers,
-      alpha: f.alpha,
-      timeMs: f.timeMs,
-      dtMs: f.dtMs,
-      focusCarId: null,
-      reducedMotion: this.reducedMotion,
-    };
+    this.worldManager.update(this.model, this.editor.isDragging, f.timeMs);
+    const geo = this.worldManager.geometry;
+    const frame = this.frameCtx;
+    frame.model = this.model;
+    frame.geometry = geo;
+    frame.geometryStale = !this.worldManager.isFresh(this.model);
+    frame.previewSegmentIds = this.editor.dragSegmentIds;
+    frame.mode = this.mode;
+    frame.editor = this.mode === 'edit' ? this.editor.overlay(f.timeMs) : null;
+    frame.layers = this.layers;
+    frame.alpha = f.alpha;
+    frame.timeMs = f.timeMs;
+    frame.dtMs = f.dtMs;
     this.renderer2d.render(frame);
     this.stats.drawCalls = this.renderer2d.drawCalls;
+    if (this.layers.minimap) this.renderMinimap(f.timeMs);
     this.stats.record(f.dtMs, f.simCostMs);
     if (f.timeMs - this.statusTick > 100) {
       this.statusTick = f.timeMs;
@@ -242,6 +293,44 @@ export class App {
     const r = this.stage.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.renderer2d.resize(r.width, r.height, dpr);
+    const narrow = r.width < 900;
+    this.minimap.resize(narrow ? 160 : 230, narrow ? 116 : 160, dpr);
+  }
+
+  private renderMinimap(timeMs: number): void {
+    const b = this.viewport.visibleBounds();
+    const c = this.viewCorners;
+    (c[0] as Vec2).x = b.minX;
+    (c[0] as Vec2).y = b.minY;
+    (c[1] as Vec2).x = b.maxX;
+    (c[1] as Vec2).y = b.minY;
+    (c[2] as Vec2).x = b.maxX;
+    (c[2] as Vec2).y = b.maxY;
+    (c[3] as Vec2).x = b.minX;
+    (c[3] as Vec2).y = b.maxY;
+    this.minimap.render({
+      geometry: this.worldManager.geometry,
+      segments: this.model.graph.segments,
+      view: c,
+      cars: null,
+      carCount: 0,
+      carKinds: null,
+      bestCar: null,
+      targets: this.noTargets,
+      route: null,
+      timeMs,
+    });
+  }
+
+  /** Replaces the world with a freshly generated demo city (seeded). */
+  loadDemoCity(seed = Math.floor(Math.random() * 1e9), opts: DemoCityOptions = {}): void {
+    const model = generateDemoCity(seed, opts);
+    model.meta.createdAt = new Date().toISOString();
+    this.worldId = newWorldId();
+    this.setModel(model, null);
+    this.history.clear();
+    this.scheduleAutosave(0);
+    this.toast(`Demo city generated (seed ${seed})`, { kind: 'success' });
   }
 
   // ---------------------------------------------------------------------------
@@ -252,6 +341,7 @@ export class App {
   setModel(model: WorldModel, view: WorldView | null = null): void {
     this.model = model;
     this.editor.setModel(model);
+    this.worldManager.reset();
     this.topbar.worldName.textContent = model.meta.name;
     if (view) this.viewport.set({ x: view.offset[0], y: view.offset[1] }, view.zoom);
     else if (model.graph.pointCount > 0) this.viewport.fitPoints(model.graph.points, 80);
@@ -264,6 +354,7 @@ export class App {
     this.topbar.mode.set(mode);
     this.editor.editable = mode === 'edit';
     this.root.querySelector('.app')?.setAttribute('data-mode', mode);
+    this.minimap.el.classList.toggle('hidden', !this.layers.minimap);
     if (mode !== 'edit') this.editor.cancel();
   }
 
@@ -283,6 +374,7 @@ export class App {
   setLayer(key: keyof LayerFlags, value: boolean): void {
     this.layers = { ...this.layers, [key]: value };
     setPref('layers', this.layers);
+    this.minimap.el.classList.toggle('hidden', !this.layers.minimap);
     this.syncPanels();
   }
 
@@ -332,6 +424,9 @@ export class App {
         break;
       case 'open':
         this.fileInput.click();
+        break;
+      case 'demo':
+        this.loadDemoCity();
         break;
       case 'dispose':
         this.disposeWorld();
@@ -579,12 +674,30 @@ export class App {
           this.viewport.set({ x: cx, y: cy }, zoom),
         autosaveNow: () => this.autosave(),
         loadWorldText: (text: string) => this.loadWorldText(text),
+        loadDemo: (seed?: number, opts?: DemoCityOptions) => this.loadDemoCity(seed, opts),
+        setLayer: (k: keyof LayerFlags, v: boolean) => this.setLayer(k, v),
       },
     };
     const getters: Record<string, () => unknown> = {
       ready: () => this.ready,
       world: () => this.model,
       stats: () => this.stats,
+      geometry: () => {
+        const g = this.worldManager.geometry;
+        return g
+          ? {
+              version: g.version,
+              fresh: this.worldManager.isFresh(this.model),
+              roads: g.data.roads.length,
+              borders: g.data.roadBorders.length,
+              buildings: g.data.buildings.length,
+              trees: g.data.trees.length,
+              genMs: this.worldManager.lastGenMs,
+              timings: g.data.timings,
+            }
+          : null;
+      },
+      minimap: () => ({ staticRedraws: this.minimap.staticRedraws }),
       mode: () => this.mode,
       viewport: () => ({ zoom: this.viewport.zoom, center: { ...this.viewport.center } }),
       history: () => ({ undo: this.history.undoSize, canRedo: this.history.canRedo }),

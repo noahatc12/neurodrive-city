@@ -116,6 +116,7 @@ export class EditorController {
     markingPreview: null,
   };
   private gesture: Gesture = { kind: 'none' };
+  private dragSegs: Set<number> | null = null;
   private readonly touches = new Map<number, Vec2>();
   private pinchLast: { dist: number; mid: Vec2 } | null = null;
   private snapState: { kind: 'grid' | 'point'; x: number; y: number; sinceMs: number } | null =
@@ -229,6 +230,16 @@ export class EditorController {
     this.state.selectedPointIds.clear();
     this.state.selectedSegmentIds.clear();
     this.onSelectionChange();
+  }
+
+  /** True while points are being dragged. */
+  get isDragging(): boolean {
+    return this.gesture.kind === 'drag';
+  }
+
+  /** Segments touching the dragged points (null when not dragging). */
+  get dragSegmentIds(): ReadonlySet<number> | null {
+    return this.gesture.kind === 'drag' ? this.dragSegs : null;
   }
 
   get hasSelection(): boolean {
@@ -707,6 +718,12 @@ export class EditorController {
       const p = g.getPoint(id);
       return { x: p?.x ?? 0, y: p?.y ?? 0 };
     });
+    const segs = new Set<number>();
+    for (const id of ids) {
+      const p = g.getPoint(id);
+      if (p) for (const s of g.segmentsWithPoint(p)) segs.add(s.id);
+    }
+    this.dragSegs = segs;
     this.gesture = {
       kind: 'drag',
       pointerId,

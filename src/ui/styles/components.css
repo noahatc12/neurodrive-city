@@ -776,3 +776,73 @@ input[type='range'] {
     display: none;
   }
 }
+
+/* ==========================================================================
+   Minimap and progress card
+   ========================================================================== */
+.minimap {
+  position: absolute;
+  left: 10px;
+  bottom: 12px;
+  padding: 6px;
+  z-index: 14;
+  overflow: hidden;
+  transition:
+    opacity var(--dur) var(--ease-out),
+    translate var(--dur) var(--ease-out);
+}
+.minimap.hidden {
+  opacity: 0;
+  translate: 0 12px;
+  pointer-events: none;
+}
+.minimap-canvas {
+  display: block;
+  border-radius: 9px;
+  background: #070a10cc;
+  cursor: pointer;
+  touch-action: none;
+}
+.app[data-mode='edit'] .minimap {
+  left: auto;
+  right: 10px;
+}
+.progress-card {
+  position: absolute;
+  top: calc(var(--topbar-h) + 22px);
+  right: 10px;
+  width: 260px;
+  padding: 10px 12px;
+  z-index: 40;
+  opacity: 0;
+  translate: 0 -8px;
+  pointer-events: none;
+  transition:
+    opacity var(--dur) var(--ease-out),
+    translate var(--dur) var(--ease-out);
+}
+.progress-card.open {
+  opacity: 1;
+  translate: 0 0;
+}
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #ffffff14;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--magenta));
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform var(--dur) var(--ease-out);
+}

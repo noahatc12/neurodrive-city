@@ -5,6 +5,7 @@
  */
 import type { Vec2 } from '../engine/math/vec2.ts';
 import type { WorldModel } from '../engine/world/worldModel.ts';
+import type { WorldGeometry } from '../engine/world/world.ts';
 import type { MarkingType } from '../engine/markings/marking.ts';
 import type { Side } from '../engine/markings/marking.ts';
 
@@ -76,6 +77,12 @@ export interface EditorOverlay {
 /** Per-frame snapshot handed to renderers. */
 export interface FrameContext {
   model: WorldModel;
+  /** Derived geometry (may be one version behind while regenerating). */
+  geometry: WorldGeometry | null;
+  /** True when `geometry` is older than the model. */
+  geometryStale: boolean;
+  /** Segments being dragged: drawn as a cheap preview over stale geometry. */
+  previewSegmentIds: ReadonlySet<number> | null;
   mode: AppMode;
   editor: EditorOverlay | null;
   layers: Readonly<LayerFlags>;

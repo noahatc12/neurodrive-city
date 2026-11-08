@@ -1,39 +1,6 @@
 import type { Page } from '@playwright/test';
 import { test, expect, shot, waitForApp } from './fixtures.ts';
-
-declare global {
-  interface Window {
-    __ND__: NDHooks;
-  }
-}
-
-interface NDHooks {
-  world: {
-    graph: { pointCount: number; segmentCount: number; points: { x: number; y: number }[] };
-    markings: { size: number };
-  };
-  history: { undo: number; canRedo: boolean };
-  editor: {
-    selectedPointId: number | null;
-    selectedSegmentIds: number[];
-    selectedPointIds: number[];
-  };
-  actions: {
-    worldToScreen(x: number, y: number): { x: number; y: number };
-    setView(x: number, y: number, z: number): void;
-    autosaveNow(): Promise<void>;
-  };
-}
-
-/** Screen position (page coordinates) of a world point. */
-async function at(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
-  return page.evaluate(([wx, wy]) => window.__ND__.actions.worldToScreen(wx, wy), [x, y] as const);
-}
-
-/** Evaluates a function in the page (it can read `window.__ND__`). */
-function nd<T>(page: Page, fn: () => T | Promise<T>): Promise<T> {
-  return page.evaluate(fn);
-}
+import { at, nd } from './nd.ts';
 
 /** Clicks a world point. `page.mouse.click` has no modifiers option, so keys are held explicitly. */
 async function clickWorld(

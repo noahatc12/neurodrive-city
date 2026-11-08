@@ -9,7 +9,7 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 0     | Scaffold and tooling                                               | done (2ac7d05) |
 | 1     | Math, graph, spatial hash                                          | done        |
 | 2     | 2D editor and viewport                                             | done        |
-| 3     | World generation and 2D world rendering                            | pending     |
+| 3     | World generation and 2D world rendering                            | done        |
 | 4     | Markings, save/load, OSM                                           | pending     |
 | 5     | Cars, sensors, damage, traffic, navigation                         | pending     |
 | 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | pending     |
@@ -18,7 +18,7 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 3, world generation and 2D world rendering.
+**Next:** Phase 4, markings behaviour and rendering, save/load polish, OSM import.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -126,6 +126,29 @@ final Definition of Done audit. Tag `v1.0.0`.
 - Bug found and fixed while testing in the browser: hover state was refreshed only on pointer
   move, so a press without a preceding move (touch, pen, synthetic input) acted on the previously
   hovered point. Pointer-down now recomputes hover first.
+
+### Phase 3 (2026-11-07)
+
+- `npm run verify`: typecheck 0, lint 0, 16 test files / 152 tests, build OK, e2e 5 passed.
+- Build: main chunk 119.52 kB (gzip 38.27 kB); the world generation worker is its own chunk.
+- Coverage (src/engine): lines 99.6%; `engine/world` lines 99.76%.
+- Generation timing (Vitest, Node, 200-segment grid): 95 ms total after optimisation (was
+  165 to 270 ms). Browser: demo city (46 segments) 36 to 54 ms including hydration.
+  Optimisation: a road envelope is the Minkowski sum of its centre segment and a disk, so
+  building and tree clearance tests use distance to centre segments instead of
+  polygon-vs-polygon tests.
+- e2e `world.spec.ts`: demo city geometry counts, canvas variance, minimap click moves the camera
+  and the minimap static layer is not redrawn per frame; dragging a point in a 325-segment world
+  for 30 pointer moves: 242 frames sampled, average 17.0 ms, max 33.5 ms (earlier run: 16.7 / 16.8);
+  a 580-segment world generates in the worker in 358 to 385 ms while frames keep flowing.
+- Screenshot `phase-3-demo-city.png`: a jittered 6 by 5 grid city. Roads are dark asphalt with
+  clean unioned borders (no seams at junctions), lighter sidewalk bands with curb lines, solid edge
+  lines and dashed centre lines trimmed at junctions; amber arrows mark the one-way street on the
+  middle row. Buildings are slate and ochre boxes leaning away from the screen centre with lit and
+  dark sides, flat roofs with a parapet line, several pitched roofs, and soft offset shadows. Trees
+  are layered green canopies clustered around the city edge. The minimap (bottom right in Edit
+  mode) shows roads, buildings and trees with the white camera rectangle.
+- Same seed gives identical counts and positions (unit test plus snapshot of counts).
 
 ## Known issues
 
