@@ -116,6 +116,11 @@ export class Simulation implements SimHost {
     this.traffic.spawnAll(this.env);
   }
 
+  /** Road width of the world (units). */
+  get roadWidth(): number {
+    return this.model.settings.roadWidth;
+  }
+
   /** Spawn pose: first Start marking, else a lane near the world centre. */
   defaultSpawn(index = 0): SpawnPose {
     const s = this.starts[index % Math.max(1, this.starts.length)];
@@ -162,8 +167,9 @@ export class Simulation implements SimHost {
   }
 
   /**
-   * Fitness basis for the AI population: progress along the lane route from the first
-   * start to the active target when one exists, otherwise distinct road cells covered.
+   * Fitness basis for the AI population: lane-credited progress along the lane route from
+   * the first start to the active target when one exists, otherwise distinct road cells
+   * covered.
    */
   createProgressTracker(capacity: number): ProgressTracker {
     const target = activeTarget(this.model.markings.ofType('target'));
@@ -177,7 +183,7 @@ export class Simulation implements SimHost {
         this.defaultSpawn(0),
         { marking: target },
       );
-      if (r) return new RouteProgress(capacity, r.path, r.sStart, r.sEnd, rw * 0.45);
+      if (r) return new RouteProgress(capacity, r.path, r.sStart, r.sEnd, rw);
     }
     return new CoverageProgress(capacity);
   }

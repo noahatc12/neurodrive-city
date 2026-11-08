@@ -1,11 +1,20 @@
 /**
  * Brain file format (`*.brain.json`) with a hand-written validator.
+ *
+ * Version 2 (v1.1) changed the route inputs of the AI navigation mode from
+ * `wpAngle, speed` to `lat, hdg, wpNear, wpFar, speed`. The weight layout is unchanged,
+ * so version 1 files still parse (and are reported as version 2); whether a brain fits
+ * is decided by its input names, so an old route-input brain is rejected by
+ * {@link fitLayout} even when its input count happens to match.
+ *
  * @module engine/ai/brainSchema
  */
 import { NeuralNetwork, type Activation, type Level } from './network.ts';
 
 export const BRAIN_FORMAT = 'neurodrive.brain';
-export const BRAIN_VERSION = 1;
+export const BRAIN_VERSION = 2;
+/** Versions {@link parseBrain} reads (older ones are migrated on load). */
+export const BRAIN_VERSIONS_READ: readonly number[] = [1, 2];
 
 export interface BrainTraining {
   generations: number;
@@ -72,7 +81,8 @@ export function parseBrain(input: unknown): BrainResult {
   const errors: string[] = [];
   if (!isObj(input)) return { ok: false, errors: ['brain file is not a JSON object'] };
   if (input.format !== BRAIN_FORMAT) errors.push(`format: expected "${BRAIN_FORMAT}"`);
-  if (input.version !== BRAIN_VERSION) errors.push(`version: expected ${BRAIN_VERSION}`);
+  if (typeof input.version !== 'number' || !BRAIN_VERSIONS_READ.includes(input.version))
+    errors.push(`version: expected one of ${BRAIN_VERSIONS_READ.join(', ')}`);
   const topo = input.topology;
   if (
     !Array.isArray(topo) ||
@@ -131,7 +141,60 @@ export function parseBrain(input: unknown): BrainResult {
   return { ok: true, net, file };
 }
 
-/** True when a brain's topology fits a sensor configuration (inputs and outputs). */
-export function brainFits(net: NeuralNetwork, inputCount: number): boolean {
-  return net.inputCount === inputCount && net.outputCount === OUTPUT_NAMES.length;
+/**
+ * True when a brain fits an input layout: the input count (or the expected input names,
+ * in order, when `names` gives the brain's own) and the four outputs.
+ */
+export function brainFits(
+  net: NeuralNetwork,
+  expected: number | readonly string[],
+  names: readonly string[] | null = null,
+): boolean {
+  const count = typeof expected === 'number' ? expected : expected.length;
+  if (net.inputCount !== count || net.outputCount !== OUTPUT_NAMES.length) return false;
+  if (typeof expected === 'number' || !names) return true;
+  return names.length === count && names.every((n, i) => n === expected[i]);
+}
+
+/** A network input layout a world accepts: rays alone, or rays plus the route inputs. */
+export interface InputLayout {
+  /** True when the layout includes the route inputs. */
+  nav: boolean;
+  inputs: string[];
+}
+
+/** The layouts for `rayCount` rays: with the route inputs first, then rays only. */
+export function inputLayouts(rayCount: number, navInputs: readonly string[]): InputLayout[] {
+  return [
+    { nav: true, inputs: inputNames(rayCount, navInputs) },
+    { nav: false, inputs: inputNames(rayCount) },
+  ];
+}
+
+/** The first layout a brain (with its input names) fits, or null. */
+export function fitLayout(
+  net: NeuralNetwork,
+  names: readonly string[],
+  layouts: readonly InputLayout[],
+): InputLayout | null {
+  return layouts.find((l) => brainFits(net, l.inputs, names)) ?? null;
+}
+
+/** The message shown when a brain fits none of a world's layouts. */
+export function layoutMismatch(
+  net: NeuralNetwork,
+  names: readonly string[],
+  layouts: readonly InputLayout[],
+): string {
+  const nav = layouts.find((l) => l.nav);
+  const plain = layouts.find((l) => !l.nav);
+  const counts = [
+    nav ? `${nav.inputs.length} inputs with route inputs` : null,
+    plain ? `${plain.inputs.length} without` : null,
+  ]
+    .filter((x) => x !== null)
+    .join(', or ');
+  const sameCount = layouts.some((l) => l.inputs.length === net.inputCount);
+  const why = sameCount ? ` Its inputs (${names.join(', ')}) are an older layout.` : '';
+  return `Brain topology [${net.topology.join(', ')}] does not match the current sensors (${counts}, and ${OUTPUT_NAMES.length} outputs); not applied.${why}`;
 }

@@ -90,6 +90,16 @@ export class InfiniteRoadSim implements SimHost {
     return this.config.lanes * this.config.laneWidth;
   }
 
+  /** Number of lanes (the lane frame route inputs are measured against). */
+  get laneCount(): number {
+    return this.config.lanes;
+  }
+
+  /** Width of one lane in units. */
+  get laneWidth(): number {
+    return this.config.laneWidth;
+  }
+
   /** x of the road centre at height y. */
   centerX(y: number): number {
     return this.config.curvy
@@ -117,7 +127,7 @@ export class InfiniteRoadSim implements SimHost {
   }
 
   createProgressTracker(capacity: number): ProgressTracker {
-    return new AxisProgress(capacity);
+    return new AxisProgress(capacity, this);
   }
 
   setExtension(ext: SimExtension | null): void {

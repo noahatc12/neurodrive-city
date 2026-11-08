@@ -13,9 +13,10 @@
  *   generation g+1 (no page reload)
  * ```
  *
- * Fitness is distance progressed (route, coverage or −y depending on the world). A
- * crash multiplies it by 0.8; a car that makes no progress for `stuckTimeout` seconds
- * is eliminated. The best car of the current generation is tracked live so the camera
+ * Fitness is distance progressed (lane-credited route progress, coverage or −y depending
+ * on the world). A crash multiplies it by 0.8, and so does a lane violation (more than
+ * 1 s over the centre line), which also eliminates the car; a car that makes no
+ * progress for `stuckTimeout` seconds is eliminated. The best car of the current generation is tracked live so the camera
  * can follow it.
  *
  * @module engine/ai/evolution
@@ -25,7 +26,12 @@ import { createCar } from '../car/carFactory.ts';
 import { HIT_NONE } from '../car/damage.ts';
 import { Sensor, type SensorConfig } from '../car/sensor.ts';
 import { Rng } from '../math/rng.ts';
-import type { ProgressTracker, SimExtension, SimHost } from '../sim/host.ts';
+import {
+  OBSERVATION_SIZE,
+  type ProgressTracker,
+  type SimExtension,
+  type SimHost,
+} from '../sim/host.ts';
 import { crossover, mutate } from './mutate.ts';
 import { NeuralNetwork, sameTopology, type Activation } from './network.ts';
 
@@ -44,7 +50,7 @@ export interface EvolutionConfig {
   /** Hidden layer sizes. */
   hidden: number[];
   sensor: Partial<SensorConfig>;
-  /** AI navigation mode (F5): add waypoint angle and speed inputs. */
+  /** AI navigation mode (F5): add the five route inputs ({@link NAV_INPUTS}). */
   navInputs: boolean;
   /** Population cars collide with traffic (always) and sensors see traffic cars. */
   seeTraffic: boolean;
@@ -80,7 +86,21 @@ export interface GenerationRecord {
   duration: number;
 }
 
-export const NAV_INPUTS = ['wpAngle', 'speed'] as const;
+/**
+ * Route inputs of the AI navigation mode (F5), in network order after the rays: lateral
+ * offset from the lane centre, heading error against the lane, signed angles to the lane
+ * 60 and 160 units ahead, and speed (see {@link ProgressTracker.observe}).
+ */
+export const NAV_INPUTS = ['lat', 'hdg', 'wpNear', 'wpFar', 'speed'] as const;
+
+/** Short labels for the route inputs (network panel). */
+export const NAV_LABELS: Readonly<Record<(typeof NAV_INPUTS)[number], string>> = Object.freeze({
+  lat: 'lat',
+  hdg: 'hdg',
+  wpNear: 'wp near',
+  wpFar: 'wp far',
+  speed: 'speed',
+});
 
 export class Population implements SimExtension {
   readonly config: EvolutionConfig;
@@ -104,7 +124,7 @@ export class Population implements SimExtension {
   private readonly lastProgress: Float64Array;
   private readonly lastImproveAt: Float64Array;
   private readonly inputs: Float64Array;
-  private readonly wp = new Float64Array(1);
+  private readonly obs = new Float64Array(OBSERVATION_SIZE);
   /** Called when a generation ends (record of the finished one). */
   onGeneration: (rec: GenerationRecord) => void = () => {};
 
@@ -149,9 +169,24 @@ export class Population implements SimExtension {
     this.spawnAll(host);
   }
 
-  /** Input names matching the topology (for brain files). */
+  /** Number of network inputs (rays plus route inputs). */
   get inputCount(): number {
     return this.topology[0] as number;
+  }
+
+  /** The current generation's progress tracker (fitness basis, lane statistics). */
+  get progress(): ProgressTracker {
+    return this.tracker;
+  }
+
+  /** Fraction of its time alive car `i` spent fully in its lane (NaN without a route). */
+  inLaneFraction(i: number): number {
+    return this.tracker.inLaneFraction?.(i) ?? Number.NaN;
+  }
+
+  /** Lane credit factor of car `i` at its last step (NaN without a route). */
+  laneFactor(i: number): number {
+    return this.tracker.laneFactor?.(i) ?? Number.NaN;
   }
 
   /** The current generation's best car. */
@@ -212,14 +247,20 @@ export class Population implements SimExtension {
       sensor.update(car, host.world, cfg.seeTraffic);
       for (let k = 0; k < rays; k++) inputs[k] = sensor.readings[k] as number;
       if (cfg.navInputs) {
-        this.wp[0] = 0;
-        this.tracker.waypoint?.(i, car, this.wp);
-        inputs[rays] = this.wp[0];
-        inputs[rays + 1] = car.speed / car.config.maxSpeed;
+        const obs = this.obs;
+        if (this.tracker.observe) this.tracker.observe(i, car, obs);
+        else {
+          // no route to observe: only the speed is known
+          obs.fill(0);
+          obs[OBSERVATION_SIZE - 1] = car.speed / car.config.maxSpeed;
+        }
+        for (let k = 0; k < OBSERVATION_SIZE; k++) inputs[rays + k] = obs[k] as number;
       }
-      const out = (this.brains[i] as NeuralNetwork).feedForward(inputs);
+      const brain = this.brains[i] as NeuralNetwork;
+      const out = brain.feedForward(inputs);
       const c = car.controls;
-      if (cfg.activation === 'step') {
+      // outputs follow the brain's own activation (a seed brain may differ from the config)
+      if (brain.activation === 'step') {
         c.forward = out[0] as number;
         c.left = out[1] as number;
         c.right = out[2] as number;
@@ -232,7 +273,7 @@ export class Population implements SimExtension {
       }
       car.updatePhysics(dt);
       host.afterMove(car, i === this.bestIndex);
-      const progress = this.tracker.update(i, car);
+      const progress = this.tracker.update(i, car, dt);
       if (progress > (this.lastProgress[i] as number) + 1) {
         this.lastProgress[i] = progress;
         this.lastImproveAt[i] = this.genTime;
@@ -241,6 +282,11 @@ export class Population implements SimExtension {
       if (host.world.polygonHit(car.polygon, car.id) !== HIT_NONE) {
         host.damage(car);
         this.fitness[i] = progress * 0.8;
+      } else if (this.tracker.laneViolation?.(i)) {
+        // over the centre line for too long: eliminated and penalised like a crash
+        this.eliminated[i] = 1;
+        this.fitness[i] = progress * 0.8;
+        car.speed = 0;
       } else if (this.genTime - (this.lastImproveAt[i] as number) > cfg.stuckTimeout) {
         this.eliminated[i] = 1;
         car.speed = 0;

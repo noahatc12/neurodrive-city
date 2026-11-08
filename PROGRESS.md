@@ -17,8 +17,12 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 8     | 3D polish, pre-trained brain, turbo worker                         | done        |
 | 9     | Stretch, accessibility, UX polish                                  | done        |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | done        |
+| 11a   | Follow-up 1 A: lane observation inputs, lane-discipline fitness    | done        |
+| 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | in progress |
+| 11c   | Follow-up 1 C: headless city training, shipped city brain          | todo        |
+| 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | todo        |
 
-**Next:** v1.0.0 is complete. Ideas beyond the Definition of Done are in `BACKLOG.md`.
+**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase B.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -408,6 +412,39 @@ final Definition of Done audit. Tag `v1.0.0`.
 | K 3D | K1 lazy load and fallback, K2 ground and roads, K3 buildings, K4 trees, K5 cars, K6 sensors, K7 markings, K8 lighting and day/night, K9 cameras, K10 bloom and presets, K11 picking | Done |
 | L Effects | L1 easing, L2 particles (3D speed lines optional: in BACKLOG), L3 UI motion, L4 2D polish, L5 visual style | Done |
 | M Layout | Top bar, toolbar, right panel, minimap, camera chips and quality preset, HUD legend, onboarding tour, 1280×720 | Done |
+
+### Follow-up 1, phase A (2026-11-08): lane observation inputs and lane-discipline fitness
+
+- Baseline before any change (`npm run verify` on the imported v1.0.0 files): typecheck 0, lint 0,
+  27 files / 240 tests, build OK (initial chunk gzip 79.92 kB), e2e 24 passed.
+- `npm run verify`: typecheck 0, lint 0, 28 test files / 257 tests, build OK, e2e 24 passed (5.8 min).
+- Build: initial chunk 251.50 kB (gzip 81.45 kB).
+- Delivered: `projectOnPathSigned` (signed lateral offset, smooth tangent through corner vertices);
+  `ProgressTracker.observe` writes `lat, hdg, wpNear, wpFar, speed` (`RouteProgress` against the
+  lane path, `AxisProgress` against the nearest infinite-road lane); route fitness credits
+  `Δs × laneFactor` on new ground only, counts time over the centre line (more than 1 s eliminates
+  the car with fitness × 0.8), ignores wrong-way driving, exposes `inLaneFraction` and `laneFactor`;
+  the hint keeps advancing outside the lane (window `[h − 4, h + 24]`); `NAV_INPUTS` has five
+  entries; brain files are version 2 (v1 files migrate; fit is decided by input names).
+- Tests added (`tests/engine/ai/lane.test.ts`, 17): signed projection and tangent blending; lane
+  factor 1 / 0.4375 / 0.25 / 0; a car on the lane centre earns Δs per step, at 0.3 w ≈ 0.44 Δs,
+  nothing beyond 0.35 w and nothing for ground already consumed; time over the centre line becomes a
+  violation after 1 s (and never at −0.2 w); wrong-way driving earns nothing; the arrival bonus;
+  `observe` signs (`lat < 0` left of the lane, `hdg ≈ +0.33` at 30° left, a corner 100 units ahead
+  gives `wpFar = atan(60/100)/π` with `wpNear = 0`, infinite-road lanes); a population car over the
+  centre line for 1.2 s is eliminated with fitness × 0.8 and not damaged; the five route inputs
+  follow the rays; a 12-input city brain round-trips; a v1 7-input route brain is rejected with the
+  mismatch message; v1 rays-only brains still fit.
+- Changed assertion: `ai/evolution > clamps the population size and supports navigation inputs`
+  expects `[10, 6, 4]` (5 route inputs now; DECISIONS #88).
+- One run of the full unit suite had `sim/performance` at 5.0 ms per step (budget 4 ms) while the
+  other test files ran in parallel; it passed 3 of 3 times alone and in the gate run (it exercises
+  no code this phase changed). Watched in the next phases.
+- Screenshots `phase-11a-*`: unchanged behaviour as intended (defaults are phase B).
+  `phase-11a-sim-2d.png` shows the reported bug: the cyan demo car beside your white car, drifting
+  across the centre line with the dashed route preview on the right-hand lane.
+  `phase-11a-train-2d.png`: generation 13 of the course-homage population at ×8, the leader on the
+  route preview, the network panel with the 5-input brain and the old "Route inputs" toggle.
 
 ## Known issues
 

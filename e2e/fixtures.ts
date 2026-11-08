@@ -3,8 +3,11 @@ import { mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Bump at the start of each phase so screenshots are archived per phase. */
-export const CURRENT_PHASE = 10;
+/**
+ * Bump at the start of each phase so screenshots are archived per phase. Follow-up 1
+ * (v1.1) uses 11a to 11d for its phases A to D.
+ */
+export const CURRENT_PHASE: string = '11a';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SHOT_DIR = join(here, '__screenshots__');

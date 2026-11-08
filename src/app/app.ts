@@ -42,7 +42,16 @@ import {
   type Selection,
 } from '../engine/ai/evolution.ts';
 import type { NeuralNetwork } from '../engine/ai/network.ts';
-import { brainFits, inputNames, parseBrain, serializeBrain } from '../engine/ai/brainSchema.ts';
+import {
+  brainFits,
+  fitLayout,
+  inputLayouts,
+  inputNames,
+  layoutMismatch,
+  parseBrain,
+  serializeBrain,
+  type InputLayout,
+} from '../engine/ai/brainSchema.ts';
 import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
 import type { SimHost } from '../engine/sim/host.ts';
 import type { Car } from '../engine/car/car.ts';
@@ -58,6 +67,12 @@ import {
 } from '../ui/panels/settingsPanel.ts';
 
 const BRAIN_KEY = 'nd:brain';
+
+/** A brain with the input names it was saved with (they decide whether it fits a world). */
+interface LoadedBrain {
+  net: NeuralNetwork;
+  inputs: string[];
+}
 import { h } from '../ui/dom.ts';
 import { HelpOverlay } from '../ui/panels/helpOverlay.ts';
 import { WorldPanel } from '../ui/panels/worldPanel.ts';
@@ -156,8 +171,8 @@ export class App {
     /** AI navigation mode (F5): route inputs in city training. */
     nav: false,
   };
-  savedBrain: NeuralNetwork | null = null;
-  pretrained: NeuralNetwork | null = null;
+  savedBrain: LoadedBrain | null = null;
+  pretrained: LoadedBrain | null = null;
   /** In Simulate mode: follow the AI demo car instead of your car. */
   focusAi = false;
   /** Bumped to force a fresh simulation (Reset, brain import). */
@@ -223,7 +238,7 @@ export class App {
     stopping: boolean;
   } | null = null;
   /** Best brain handed back by the last turbo run (seeds the next population). */
-  turboBrain: NeuralNetwork | null = null;
+  turboBrain: LoadedBrain | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -284,7 +299,7 @@ export class App {
         this.simGen++;
         this.toast(
           on
-            ? 'AI navigation: the network also sees the angle to the next route waypoint and its speed'
+            ? 'AI navigation: the network also sees its lane offset, heading error, two route waypoints and its speed'
             : 'AI navigation off: sensors only',
         );
       },
@@ -644,22 +659,40 @@ export class App {
     return this.evo.nav && this.mode === 'train' && !this.infinite;
   }
 
-  /** Input names for a brain (rays, plus the navigation inputs when it has them). */
-  private brainInputs(net: NeuralNetwork): string[] {
-    const rays = new Sensor().rayCount;
-    return inputNames(rays, (net.topology[0] ?? rays) > rays ? NAV_INPUTS : []);
+  /** Number of sensor rays population cars use in the current world. */
+  private rayCount(): number {
+    return new Sensor().rayCount;
   }
 
-  private seedBrain(): NeuralNetwork | null {
-    const inputs = new Sensor().rayCount + (this.navActive ? NAV_INPUTS.length : 0);
-    if (this.turboBrain && brainFits(this.turboBrain, inputs)) return this.turboBrain;
-    if (this.savedBrain && brainFits(this.savedBrain, inputs)) return this.savedBrain;
-    if (this.pretrained && brainFits(this.pretrained, inputs)) return this.pretrained;
-    return null;
+  /** Input layouts brains may have in the current world (with and without route inputs). */
+  private layouts(): InputLayout[] {
+    return inputLayouts(this.rayCount(), NAV_INPUTS);
+  }
+
+  /** Input names of the population's brains (rays, plus the route inputs when enabled). */
+  private popInputs(pop: Population): string[] {
+    return inputNames(
+      pop.sensors[0]?.rayCount ?? this.rayCount(),
+      pop.config.navInputs ? NAV_INPUTS : [],
+    );
+  }
+
+  /** The network of `b` when it fits the input names `inputs`, else null. */
+  private fitting(b: LoadedBrain | null, inputs: readonly string[]): LoadedBrain | null {
+    return b && brainFits(b.net, inputs, b.inputs) ? b : null;
+  }
+
+  private seedBrain(): LoadedBrain | null {
+    const inputs = inputNames(this.rayCount(), this.navActive ? NAV_INPUTS : []);
+    return (
+      this.fitting(this.turboBrain, inputs) ??
+      this.fitting(this.savedBrain, inputs) ??
+      this.fitting(this.pretrained, inputs)
+    );
   }
 
   private startSim(key: string): void {
-    const seed = this.seedBrain();
+    const seed = this.seedBrain()?.net ?? null;
     const evo = {
       population: this.evo.cars,
       mutation: this.evo.mutation,
@@ -842,7 +875,10 @@ export class App {
       this.syncTrainingPanel();
       return false;
     }
-    const seedNet = this.population?.bestEver ?? this.seedBrain();
+    const pop0 = this.population;
+    const seedBrain: LoadedBrain | null = pop0
+      ? { net: pop0.bestEver, inputs: this.popInputs(pop0) }
+      : this.seedBrain();
     const worker = new Worker(new URL('../workers/trainer.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -866,8 +902,8 @@ export class App {
         seed: 1 + this.simGen,
         navInputs: this.navActive,
       },
-      seedBrain: seedNet
-        ? serializeBrain(seedNet, this.brainInputs(seedNet), {
+      seedBrain: seedBrain
+        ? serializeBrain(seedBrain.net, seedBrain.inputs, {
             generations: this.population?.generation ?? 0,
             bestFitness: this.population?.bestEverFitness ?? 0,
             world: 'seed',
@@ -919,7 +955,7 @@ export class App {
       this.turbo = null;
       const res = parseBrain(m.brain);
       if (res.ok) {
-        this.turboBrain = res.net;
+        this.turboBrain = { net: res.net, inputs: res.file.inputs };
         this.simGen++; // restart the visible population from the turbo brain
       }
       this.loop.paused = false;
@@ -964,7 +1000,7 @@ export class App {
     try {
       const res = parseBrain(JSON.parse(await this.fetchText('brains/pretrained.brain.json')));
       if (res.ok) {
-        this.pretrained = res.net;
+        this.pretrained = { net: res.net, inputs: res.file.inputs };
         this.syncTrainingPanel();
       } else console.warn('bundled brain rejected', res.errors);
     } catch (e) {
@@ -977,7 +1013,7 @@ export class App {
       const raw = localStorage.getItem(BRAIN_KEY);
       if (!raw) return;
       const res = parseBrain(JSON.parse(raw));
-      this.savedBrain = res.ok ? res.net : null;
+      this.savedBrain = res.ok ? { net: res.net, inputs: res.file.inputs } : null;
     } catch {
       this.savedBrain = null;
     }
@@ -990,7 +1026,8 @@ export class App {
       this.toast('Start training (T) to save a brain');
       return;
     }
-    const file = serializeBrain(pop.bestEver, this.brainInputs(pop.bestEver), {
+    const inputs = this.popInputs(pop);
+    const file = serializeBrain(pop.bestEver, inputs, {
       generations: pop.generation,
       bestFitness: Math.round(pop.bestEverFitness),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
@@ -999,7 +1036,7 @@ export class App {
     });
     try {
       localStorage.setItem(BRAIN_KEY, JSON.stringify(file));
-      this.savedBrain = pop.bestEver.clone();
+      this.savedBrain = { net: pop.bestEver.clone(), inputs };
       this.toast(
         `Best brain saved (generation ${pop.generation}, fitness ${Math.round(pop.bestEverFitness / 10)})`,
         { kind: 'success' },
@@ -1041,12 +1078,14 @@ export class App {
 
   exportBrain(): void {
     const pop = this.population;
-    const net = pop ? pop.bestEver : this.savedBrain;
-    if (!net) {
+    const brain: LoadedBrain | null = pop
+      ? { net: pop.bestEver, inputs: this.popInputs(pop) }
+      : this.savedBrain;
+    if (!brain) {
       this.toast('No brain to export yet');
       return;
     }
-    const file = serializeBrain(net, this.brainInputs(net), {
+    const file = serializeBrain(brain.net, brain.inputs, {
       generations: pop?.generation ?? 0,
       bestFitness: Math.round(pop?.bestEverFitness ?? 0),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
@@ -1076,19 +1115,16 @@ export class App {
       this.toast('Not a valid brain file', { kind: 'error', details: res.errors });
       return;
     }
-    const inputs = new Sensor().rayCount;
-    const navBrain = brainFits(res.net, inputs + NAV_INPUTS.length);
-    if (!brainFits(res.net, inputs) && !navBrain) {
-      this.toast(
-        `Brain topology [${res.net.topology.join(', ')}] does not match the current sensors (${inputs} inputs, or ${inputs + NAV_INPUTS.length} with route inputs, and 4 outputs); not applied`,
-        { kind: 'error' },
-      );
+    const layouts = this.layouts();
+    const layout = fitLayout(res.net, res.file.inputs, layouts);
+    if (!layout) {
+      this.toast(layoutMismatch(res.net, res.file.inputs, layouts), { kind: 'error' });
       return;
     }
     // a brain with route inputs switches the AI navigation mode on (F5)
-    this.evo.nav = navBrain;
+    this.evo.nav = layout.nav;
     localStorage.setItem(BRAIN_KEY, JSON.stringify(res.file));
-    this.savedBrain = res.net;
+    this.savedBrain = { net: res.net, inputs: res.file.inputs };
     this.simGen++;
     this.toast(`Brain imported (${res.file.training.generations} generations)`, {
       kind: 'success',

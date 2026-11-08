@@ -299,7 +299,8 @@ describe('ai/evolution', () => {
       seed: 1,
     });
     expect(pop.cars).toHaveLength(1000);
-    expect(pop.topology).toEqual([7, 6, 4]);
+    // 5 rays + the 5 route inputs of brain format v2 (was 5 + 2 in v1; DECISIONS #88)
+    expect(pop.topology).toEqual([10, 6, 4]);
     const small = new Population(host, {
       population: 3,
       navInputs: true,

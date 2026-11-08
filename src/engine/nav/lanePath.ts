@@ -214,6 +214,101 @@ export function projectOnPath(
   return bestS;
 }
 
+/**
+ * Like {@link projectOnPath}, plus the side of the path and its direction. Writes
+ * `out = [distance, signedLateral, tx, ty]`:
+ *
+ * - `signedLateral`: the distance with a sign, positive to the right of travel (toward
+ *   the kerb in right-hand traffic), negative to the left (toward oncoming traffic). In
+ *   y-down space the right of a direction (tx, ty) is (−ty, tx).
+ * - `(tx, ty)`: the unit tangent at the projection. Within half the shorter neighbouring
+ *   segment of a vertex it blends toward the neighbour, so the tangent turns smoothly
+ *   through the short segments of a corner arc instead of jumping at every vertex.
+ *
+ * Returns the arc position. Allocation-free; `out` needs four slots.
+ */
+export function projectOnPathSigned(
+  path: LanePath,
+  x: number,
+  y: number,
+  from: number,
+  to: number,
+  out: Float64Array,
+): number {
+  let bestD = Infinity;
+  let bestS = 0;
+  let bestI = -1;
+  let bestT = 0;
+  const xy = path.xy;
+  const lo = Math.max(0, from);
+  const hi = Math.min(path.count - 1, to);
+  for (let i = lo; i < hi; i++) {
+    const ax = xy[i * 2] as number;
+    const ay = xy[i * 2 + 1] as number;
+    const dx = (xy[i * 2 + 2] as number) - ax;
+    const dy = (xy[i * 2 + 3] as number) - ay;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const d = Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+      bestT = t;
+      bestS = (path.cum[i] as number) + Math.sqrt(l2) * t;
+    }
+  }
+  if (bestI < 0) {
+    out[0] = Infinity;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = -1;
+    return 0;
+  }
+  const i = bestI;
+  const ax = xy[i * 2] as number;
+  const ay = xy[i * 2 + 1] as number;
+  const dx = (xy[i * 2 + 2] as number) - ax;
+  const dy = (xy[i * 2 + 3] as number) - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  // side from the segment's own direction: right of (ux, uy) is (−uy, ux)
+  const side = (x - ax) * -uy + (y - ay) * ux;
+  out[0] = bestD;
+  out[1] = side < 0 ? -bestD : bestD;
+  // smooth tangent near the vertices
+  let tx = ux;
+  let ty = uy;
+  const along = bestT * len;
+  if (i > 0 && along < len / 2) {
+    const px = ax - (xy[i * 2 - 2] as number);
+    const py = ay - (xy[i * 2 - 1] as number);
+    const pl = Math.hypot(px, py);
+    const blend = 0.5 * Math.min(len, pl);
+    if (pl > 1e-9 && along < blend) {
+      const w = 0.5 * (1 - along / blend);
+      tx = tx * (1 - w) + (px / pl) * w;
+      ty = ty * (1 - w) + (py / pl) * w;
+    }
+  } else if (i + 2 < path.count) {
+    const nx = (xy[i * 2 + 4] as number) - (xy[i * 2 + 2] as number);
+    const ny = (xy[i * 2 + 5] as number) - (xy[i * 2 + 3] as number);
+    const nl = Math.hypot(nx, ny);
+    const blend = 0.5 * Math.min(len, nl);
+    const rest = len - along;
+    if (nl > 1e-9 && rest < blend) {
+      const w = 0.5 * (1 - rest / blend);
+      tx = tx * (1 - w) + (nx / nl) * w;
+      ty = ty * (1 - w) + (ny / nl) * w;
+    }
+  }
+  const tl = Math.hypot(tx, ty) || 1;
+  out[2] = tx / tl;
+  out[3] = ty / tl;
+  return bestS;
+}
+
 /** Point at arc position `s` (clamped), written into `out` [x, y]; returns the segment index. */
 export function pointAt(path: LanePath, s: number, out: Float64Array, hint = 0): number {
   const n = path.count;
