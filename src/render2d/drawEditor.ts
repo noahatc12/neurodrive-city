@@ -75,7 +75,7 @@ export function drawEditorOverlay(
   }
 
   // point handles (only for the graph and erase tools, and only when zoomed in enough)
-  const showHandles = (ov.tool === 'graph' || ov.tool === 'erase') && z > 0.08;
+  const showHandles = (ov.tool === 'graph' || ov.tool === 'erase') && z > 0.18;
   if (showHandles) {
     const r = px(5.5);
     ctx.fillStyle = 'rgba(230, 237, 247, 0.9)';

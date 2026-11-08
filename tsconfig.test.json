@@ -1,0 +1,8 @@
+{
+  "//": "Unit tests: the app's DOM settings plus Node types (tests read bundled files).",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src", "tests"]
+}

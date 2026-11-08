@@ -186,7 +186,7 @@ describe('world/generateWorld', () => {
     const d = generateWorld(input, { now: () => performance.now() });
     const ms = performance.now() - t0;
     console.info(`200-segment world generated in ${ms.toFixed(1)} ms`, d.timings);
-    expect(ms).toBeLessThan(process.env.CI ? 1500 : 600);
+    expect(ms).toBeLessThan(process.env['CI'] ? 1500 : 600);
   });
 });
 

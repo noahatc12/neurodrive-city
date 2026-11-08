@@ -18,6 +18,7 @@ import type {
 } from '../app/renderer.ts';
 import type { WorldGeometry } from '../engine/world/world.ts';
 import { drawEditorOverlay, drawSnapGrid } from './drawEditor.ts';
+import { MarkingPainter } from './drawMarkings.ts';
 import {
   drawBackground,
   drawDebugLayers,
@@ -36,6 +37,7 @@ export class Canvas2DRenderer implements Renderer {
   readonly viewport: Viewport;
   readonly pseudo3d = new Pseudo3D();
   readonly staticCache = new StaticLayerCache();
+  readonly markingPainter = new MarkingPainter();
   private ctx: CanvasRenderingContext2D;
   private dpr = 1;
   private paths: WorldPaths | null = null;
@@ -148,6 +150,29 @@ export class Canvas2DRenderer implements Renderer {
     if (geo) {
       this.pseudo3d.drawShadows(ctx, geo);
       this.drawCalls++;
+    }
+    if (layers.markings) {
+      const ed = frame.mode === 'edit' ? frame.editor : null;
+      this.markingPainter.drawAll(
+        ctx,
+        frame.model.graph,
+        frame.model.markings.all(),
+        roadWidth,
+        frame.lights,
+        frame.timeMs,
+        ed ? ed.hoverMarkingId : null,
+        ed?.tool === 'erase' ? PALETTE.red : PALETTE.amber,
+      );
+      if (ed?.markingPreview) {
+        this.markingPainter.drawPreview(
+          ctx,
+          frame.model.graph,
+          ed.markingPreview,
+          roadWidth,
+          frame.timeMs,
+        );
+      }
+      this.drawCalls += frame.model.markings.size + 1;
     }
     this.pseudo3d.draw(ctx, geo, null);
     this.drawCalls += this.pseudo3d.drawn;

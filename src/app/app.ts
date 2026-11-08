@@ -18,6 +18,17 @@ import { ProgressOverlay } from '../ui/progressOverlay.ts';
 import { generateDemoCity, type DemoCityOptions } from '../engine/world/demoCity.ts';
 import type { Vec2 } from '../engine/math/vec2.ts';
 import { WorldManager } from './worldManager.ts';
+import { TrafficLightSystem } from '../engine/markings/trafficLightController.ts';
+import { resolveMarking } from '../engine/markings/marking.ts';
+import { addDemoMarkings } from '../engine/world/demoMarkings.ts';
+import {
+  OsmFormatError,
+  importOsmSteps,
+  type OsmImportOptions,
+  type OsmResult,
+} from '../engine/osm/osmParse.ts';
+import { OsmDialog } from '../ui/panels/osmDialog.ts';
+import { LibraryDialog } from '../ui/panels/libraryDialog.ts';
 import { h } from '../ui/dom.ts';
 import { HelpOverlay } from '../ui/panels/helpOverlay.ts';
 import { WorldPanel } from '../ui/panels/worldPanel.ts';
@@ -90,7 +101,14 @@ export class App {
     { x: 0, y: 0 },
     { x: 0, y: 0 },
   ];
-  private readonly noTargets: Vec2[] = [];
+  private targets: Vec2[] = [];
+  private targetsVersion = -1;
+  readonly lights = new TrafficLightSystem();
+  private lightsVersion = -1;
+  private readonly osmDialog: OsmDialog;
+  private readonly library: LibraryDialog;
+  private lastThumbAt = -Infinity;
+  private importing = false;
   private readonly fileInput: HTMLInputElement;
   private autosaveTimer = 0;
   private lastSavedSignature = '';
@@ -175,8 +193,7 @@ export class App {
       ),
     );
     this.toolbar.setActive('graph');
-    for (const id of ['ring', 'infinite', 'osm-sample', 'osm-import', 'library'])
-      this.topbar.setItemEnabled(id, false);
+    for (const id of ['infinite']) this.topbar.setItemEnabled(id, false);
     this.topbar.view.setDisabled('3d', true, '3D view arrives in a later build');
 
     this.worldManager = new WorldManager({
@@ -194,11 +211,27 @@ export class App {
       },
     });
     this.minimap.onNavigate = (w) => this.viewport.panTo(w);
+    this.osmDialog = new OsmDialog({
+      onImport: (text, opts) => void this.importOsmText(text, opts),
+      loadSampleText: () => this.fetchText('worlds/osm-sample.osm.json'),
+      toast: (m) => this.toast(m),
+    });
+    this.library = new LibraryDialog({
+      list: () => this.store?.list() ?? Promise.resolve([]),
+      currentId: () => this.worldId,
+      currentName: () => this.model.meta.name,
+      open: (id) => void this.openFromLibrary(id),
+      remove: (id) => this.removeFromLibrary(id),
+      rename: (name) => this.renameWorld(name),
+      newWorld: () => this.newWorld(),
+    });
+    root.querySelector('.app')?.append(this.osmDialog.dialog.el, this.library.dialog.el);
     this.frameCtx = {
       model: this.model,
       geometry: null,
       geometryStale: true,
       previewSegmentIds: null,
+      lights: this.lights,
       mode: this.mode,
       editor: null,
       layers: this.layers,
@@ -263,6 +296,8 @@ export class App {
     frame.alpha = f.alpha;
     frame.timeMs = f.timeMs;
     frame.dtMs = f.dtMs;
+    this.syncLights();
+    if (this.mode === 'edit') this.lights.update(f.dtMs / 1000);
     this.renderer2d.render(frame);
     this.stats.drawCalls = this.renderer2d.drawCalls;
     if (this.layers.minimap) this.renderMinimap(f.timeMs);
@@ -316,7 +351,7 @@ export class App {
       carCount: 0,
       carKinds: null,
       bestCar: null,
-      targets: this.noTargets,
+      targets: this.targetList(),
       route: null,
       timeMs,
     });
@@ -325,6 +360,7 @@ export class App {
   /** Replaces the world with a freshly generated demo city (seeded). */
   loadDemoCity(seed = Math.floor(Math.random() * 1e9), opts: DemoCityOptions = {}): void {
     const model = generateDemoCity(seed, opts);
+    addDemoMarkings(model);
     model.meta.createdAt = new Date().toISOString();
     this.worldId = newWorldId();
     this.setModel(model, null);
@@ -431,10 +467,204 @@ export class App {
       case 'dispose':
         this.disposeWorld();
         break;
+      case 'ring':
+        await this.loadBundled('worlds/ring-road.world.json', 'Ring road');
+        break;
+      case 'osm-sample':
+        await this.importOsmText(await this.fetchText('worlds/osm-sample.osm.json'), {
+          name: 'Neuenstadt (OSM sample)',
+          decorate: true,
+        });
+        break;
+      case 'osm-import':
+        this.osmDialog.show();
+        break;
+      case 'library':
+        await this.library.show();
+        break;
       default:
-        await Promise.resolve();
         this.toast('Coming in a later build');
     }
+  }
+
+  /** Fetches a bundled file relative to the app base path. */
+  async fetchText(path: string): Promise<string> {
+    const res = await fetch(`${import.meta.env.BASE_URL}${path}`);
+    if (!res.ok) throw new Error(`Could not fetch ${path} (${res.status})`);
+    return res.text();
+  }
+
+  /** Loads a bundled world file. */
+  async loadBundled(path: string, label: string): Promise<boolean> {
+    try {
+      return this.loadWorldText(await this.fetchText(path), label);
+    } catch (e) {
+      this.toast(`Could not load ${label}`, { kind: 'error', details: [String(e)] });
+      return false;
+    }
+  }
+
+  /**
+   * Imports Overpass JSON text (spec J4/J5). Parsing runs as a generator stepped in
+   * slices of about 8 ms per frame with a progress bar, so the UI never blocks; the
+   * world is then generated (in a worker when large).
+   */
+  async importOsmText(
+    text: string,
+    opts: OsmImportOptions & { decorate?: boolean } = {},
+  ): Promise<boolean> {
+    if (this.importing) return false;
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      this.toast('That is not valid JSON', {
+        kind: 'error',
+        details: [e instanceof Error ? e.message : String(e)],
+      });
+      return false;
+    }
+    this.importing = true;
+    this.progress.start('Importing OpenStreetMap data');
+    try {
+      const steps = importOsmSteps(json, opts);
+      let result: OsmResult | null = null;
+      while (!result) {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 8) {
+          const r = steps.next();
+          if (r.done) {
+            result = r.value;
+            break;
+          }
+          this.progress.set(r.value * 0.5, 'Importing OpenStreetMap data');
+        }
+        if (!result) await new Promise((res) => requestAnimationFrame(res));
+      }
+      if (result.model.graph.segmentCount === 0) {
+        this.progress.done();
+        this.toast('No drivable roads found', { kind: 'warn', details: result.warnings });
+        return false;
+      }
+      result.model.meta.createdAt = new Date().toISOString();
+      if (opts.decorate) addDemoMarkings(result.model);
+      this.worldId = newWorldId();
+      this.setModel(result.model, null);
+      this.history.clear();
+      this.scheduleAutosave(0);
+      this.progress.done();
+      const st = result.stats;
+      this.toast(
+        `Imported ${result.model.graph.segmentCount} road segments from ${st.highways} ways`,
+        {
+          kind: 'success',
+          details: [
+            `${st.oneWay} one-way, ${st.bridges} bridges, ${st.tunnels} tunnels, ${st.skipped} ways skipped`,
+          ],
+        },
+      );
+      return true;
+    } catch (e) {
+      this.progress.done();
+      const msg =
+        e instanceof OsmFormatError
+          ? e.message
+          : `Import failed: ${e instanceof Error ? e.message : String(e)}`;
+      this.toast('Could not import OSM data', { kind: 'error', details: [msg] });
+      return false;
+    } finally {
+      this.importing = false;
+    }
+  }
+
+  /** Re-groups traffic lights when markings change (cheap version check). */
+  private syncLights(): void {
+    const v = this.model.markings.version;
+    if (v === this.lightsVersion) return;
+    this.lightsVersion = v;
+    this.lights.build(
+      this.model.markings.ofType('light'),
+      this.model.graph,
+      this.model.settings.roadWidth,
+      v,
+    );
+  }
+
+  /** Target positions for the minimap (rebuilt on markings change). */
+  private targetList(): Vec2[] {
+    const v = this.model.markings.version;
+    if (v !== this.targetsVersion) {
+      this.targetsVersion = v;
+      this.targets = [];
+      for (const m of this.model.markings.ofType('target')) {
+        const r = resolveMarking(m, this.model.graph, this.model.settings.roadWidth);
+        if (r) this.targets.push(r.center);
+      }
+    }
+    return this.targets;
+  }
+
+  // ---------------------------------------------------------------------------
+  // World library
+  // ---------------------------------------------------------------------------
+
+  private async openFromLibrary(id: string): Promise<void> {
+    if (!this.store || id === this.worldId) return;
+    await this.autosave();
+    const entry = await this.store.load(id);
+    if (!entry) {
+      this.toast('That world no longer exists', { kind: 'warn' });
+      return;
+    }
+    const res = parseWorldText(JSON.stringify(entry.file));
+    if (!res.ok) {
+      this.toast('Could not open world', { kind: 'error', details: res.errors });
+      return;
+    }
+    this.worldId = entry.id;
+    this.setModel(res.value.model, res.value.view);
+    this.history.clear();
+    setLastWorldId(entry.id);
+    this.lastSavedSignature = this.signature();
+    this.toast(`Opened "${entry.name}"`, { kind: 'success' });
+  }
+
+  private async removeFromLibrary(id: string): Promise<void> {
+    if (!this.store) return;
+    const entry = await this.store.load(id);
+    await this.store.remove(id);
+    if (entry) {
+      this.toast(`Deleted "${entry.name}"`, {
+        kind: 'warn',
+        action: {
+          label: 'Undo',
+          run: () => void this.store?.save(entry).then(() => this.library.refresh()),
+        },
+      });
+    }
+    if (id === this.worldId) {
+      this.worldId = newWorldId();
+      this.lastSavedSignature = '';
+    }
+  }
+
+  renameWorld(name: string): void {
+    this.model.meta.name = name;
+    this.topbar.worldName.textContent = name;
+    this.scheduleAutosave(0);
+  }
+
+  newWorld(): void {
+    void this.autosave().then(() => {
+      this.worldId = newWorldId();
+      this.setModel(
+        new WorldModel({ meta: { name: 'Untitled world', createdAt: new Date().toISOString() } }),
+        null,
+      );
+      this.viewport.set({ x: 0, y: 0 }, 0.6);
+      this.history.clear();
+      this.scheduleAutosave(0);
+    });
   }
 
   disposeWorld(): void {
@@ -512,6 +742,17 @@ export class App {
     this.autosaveTimer = window.setTimeout(() => void this.autosave(), delay);
   }
 
+  /** Minimap-based thumbnail, refreshed at most every 10 s (kept between saves). */
+  private thumbCache: string | null = null;
+  private thumbnail(): string | null {
+    const now = performance.now();
+    if (now - this.lastThumbAt > 10_000 || this.thumbCache === null) {
+      this.thumbCache = this.minimap.thumbnail();
+      this.lastThumbAt = now;
+    }
+    return this.thumbCache;
+  }
+
   async autosave(): Promise<void> {
     if (!this.store) return;
     const sig = this.signature();
@@ -521,7 +762,7 @@ export class App {
         id: this.worldId,
         name: this.model.meta.name,
         updatedAt: new Date().toISOString(),
-        thumbnail: null,
+        thumbnail: this.thumbnail(),
         file,
       });
       setLastWorldId(this.worldId);
@@ -675,6 +916,10 @@ export class App {
         autosaveNow: () => this.autosave(),
         loadWorldText: (text: string) => this.loadWorldText(text),
         loadDemo: (seed?: number, opts?: DemoCityOptions) => this.loadDemoCity(seed, opts),
+        loadBundled: (path: string) => this.loadBundled(path, path),
+        loadSampleOsm: () => this.menuAction('osm-sample'),
+        lightColor: (id: number) => this.lights.colorOf(id),
+        updateLights: (dt: number) => this.lights.update(dt),
         setLayer: (k: keyof LayerFlags, v: boolean) => this.setLayer(k, v),
       },
     };

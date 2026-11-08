@@ -112,9 +112,20 @@ test('editor: draw, drag, select, split, delete, box select, undo all, persist',
     await page.keyboard.press('Control+Shift+z');
   expect(await counts(page)).toEqual([3, 2]);
 
-  // 9. Autosave (IndexedDB) survives a reload.
+  // 9. Place a stop marking on a remaining road; autosave (IndexedDB) survives a reload.
+  await page.keyboard.press('2');
+  const seg = await nd(page, () => {
+    const pts = window.__ND__.world.graph.points;
+    const a = pts[0];
+    const b = pts[1];
+    return a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : { x: 0, y: 0 };
+  });
+  await clickWorld(page, seg.x, seg.y + 15);
+  expect(await nd(page, () => window.__ND__.world.markings.size)).toBe(1);
+  await page.keyboard.press('1');
   await nd(page, () => window.__ND__.actions.autosaveNow());
   await page.reload();
   await waitForApp(page);
   await expect.poll(() => counts(page)).toEqual([3, 2]);
+  expect(await nd(page, () => window.__ND__.world.markings.size)).toBe(1);
 });

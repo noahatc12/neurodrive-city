@@ -149,3 +149,25 @@ describe('io/serialize', () => {
     expect(migrateWorld(foreign)).toBe(foreign);
   });
 });
+
+describe('io: bundled worlds round trip', () => {
+  it('save → load → regenerate gives identical derived counts', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { generateWorld, worldInputFrom } = await import('../../../src/engine/world/world.ts');
+    for (const name of ['grid-town', 'ring-road', 'osm-sample']) {
+      const res = parseWorld(JSON.parse(readFileSync(`public/worlds/${name}.world.json`, 'utf8')));
+      expect(res.ok, name).toBe(true);
+      if (!res.ok) continue;
+      const m = res.value.model;
+      expect(m.markings.size, name).toBeGreaterThan(3);
+      const before = generateWorld(worldInputFrom(m));
+      const again = parseWorld(JSON.parse(JSON.stringify(serializeWorld(m))));
+      if (!again.ok) throw new Error('reparse failed');
+      const after = generateWorld(worldInputFrom(again.value.model));
+      expect(after.roadBorders.length, name).toBe(before.roadBorders.length);
+      expect(after.buildings.length, name).toBe(before.buildings.length);
+      expect(after.trees.length, name).toBe(before.trees.length);
+      expect(again.value.model.markings.size, name).toBe(m.markings.size);
+    }
+  });
+});

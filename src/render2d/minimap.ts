@@ -94,6 +94,15 @@ export class Minimap {
     this.cacheKey = '';
   }
 
+  /** PNG data URL of the static layer (roads, buildings, trees) for library thumbnails. */
+  thumbnail(): string | null {
+    try {
+      return this.cache.width > 0 ? this.cache.toDataURL('image/png') : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** World → minimap CSS pixels. */
   project(p: Vec2, out: Vec2): Vec2 {
     out.x = p.x * this.scale + this.offX;

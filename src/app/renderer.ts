@@ -6,6 +6,7 @@
 import type { Vec2 } from '../engine/math/vec2.ts';
 import type { WorldModel } from '../engine/world/worldModel.ts';
 import type { WorldGeometry } from '../engine/world/world.ts';
+import type { TrafficLightSystem } from '../engine/markings/trafficLightController.ts';
 import type { MarkingType } from '../engine/markings/marking.ts';
 import type { Side } from '../engine/markings/marking.ts';
 
@@ -83,6 +84,8 @@ export interface FrameContext {
   geometryStale: boolean;
   /** Segments being dragged: drawn as a cheap preview over stale geometry. */
   previewSegmentIds: ReadonlySet<number> | null;
+  /** Traffic light controllers (lamp states for rendering). */
+  lights: TrafficLightSystem | null;
   mode: AppMode;
   editor: EditorOverlay | null;
   layers: Readonly<LayerFlags>;
