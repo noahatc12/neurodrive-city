@@ -4,7 +4,7 @@
 virtual city in TypeScript where cars learn with a from-scratch neural network and
 neuro-evolution, shown in a crisp 2D editor and a lit, bloomed 3D view.
 
-**Live demo:** _https://YOUR-USER.github.io/neurodrive-city/_ (placeholder until the first deploy)
+**Live demo:** [neurodrive-city.pages.dev](https://neurodrive-city.pages.dev/) (Cloudflare Pages)
 
 | Editor (2D)                              | Simulate (2D)                         |
 | ---------------------------------------- | ------------------------------------- |
@@ -271,8 +271,11 @@ the 1280×720 layout. Screenshots land in `e2e/__screenshots__/`.
 with `VITE_BASE=/<repo-name>/` and publishes `dist/`. In the repository settings, set Pages to
 "GitHub Actions" once.
 
-**Cloudflare Pages (alternative):** build command `npm run build`, output directory `dist`,
-environment variable `VITE_BASE=/`.
+**Cloudflare Pages (the live demo):** `npm run deploy:cf` builds at the site root and uploads
+`dist/` to the `neurodrive-city` Pages project with Wrangler (run `npx wrangler login` once).
+`public/_headers` gives the content-hashed files in `/assets` a one-year immutable cache. To
+deploy from Git instead, connect the repository in the Cloudflare dashboard with build command
+`npm run build` and output directory `dist` (the base path defaults to `/`).
 
 **Recording a GIF for the README:** run `npm run dev`, open the demo city, press `T` to train at
 ×8, then `V` for 3D and `L` for night. Record a 10 to 15 second clip with any screen recorder
