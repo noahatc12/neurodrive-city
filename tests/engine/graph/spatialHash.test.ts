@@ -72,3 +72,15 @@ describe('graph/spatialHash', () => {
     expect(h.query(box(-100, -100, 100, 100))).toEqual([]);
   });
 });
+
+describe('graph/spatialHash huge queries', () => {
+  it('answers an enormous query rectangle quickly by walking occupied cells', () => {
+    const h = new SpatialHash(10);
+    h.insert(1, box(0, 0, 5, 5));
+    h.insert(2, box(1000, 1000, 1001, 1001));
+    const t0 = performance.now();
+    expect(h.queryPoint(0, 0, 1e9).sort()).toEqual([1, 2]);
+    expect(h.queryRect(500, 500, 1e8, 1e8)).toEqual([2]);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+});

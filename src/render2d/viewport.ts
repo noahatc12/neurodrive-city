@@ -38,6 +38,8 @@ export class Viewport {
   private anchorScreen: Vec2 | null = null;
   private readonly anchorWorld: Vec2 = { x: 0, y: 0 };
   private targetCenter: Vec2 | null = null;
+  /** performance.now() until which camera-follow yields to manual panning. */
+  followPausedUntil = 0;
   private readonly tmp: Vec2 = { x: 0, y: 0 };
 
   constructor(options: ViewportOptions = {}) {
@@ -73,6 +75,7 @@ export class Viewport {
 
   /** Pans by a screen-space delta (dragging the world with the pointer). */
   panByScreen(dx: number, dy: number): void {
+    this.followPausedUntil = (typeof performance !== 'undefined' ? performance.now() : 0) + 2500;
     this.center.x -= dx / this.zoom;
     this.center.y -= dy / this.zoom;
     this.targetCenter = null;
@@ -173,6 +176,20 @@ export class Viewport {
     }
     if (this.zoom === this.targetZoom) this.anchorScreen = null;
     return moved;
+  }
+
+  /**
+   * Smoothly follows a world point (the focused car) with frame-rate independent
+   * exponential damping. Yields to manual panning for a couple of seconds.
+   */
+  follow(x: number, y: number, dt: number, k = 5): void {
+    if (this.targetCenter) return;
+    if (typeof performance !== 'undefined' && performance.now() < this.followPausedUntil) return;
+    const f = 1 - Math.exp(-k * dt);
+    this.center.x += (x - this.center.x) * f;
+    this.center.y += (y - this.center.y) * f;
+    if (this.anchorScreen)
+      this.screenToWorld(this.anchorScreen.x, this.anchorScreen.y, this.anchorWorld);
   }
 
   /** World-space rectangle currently visible, grown by `pad` world units. */

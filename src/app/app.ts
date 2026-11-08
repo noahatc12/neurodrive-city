@@ -29,6 +29,12 @@ import {
 } from '../engine/osm/osmParse.ts';
 import { OsmDialog } from '../ui/panels/osmDialog.ts';
 import { LibraryDialog } from '../ui/panels/libraryDialog.ts';
+import { Simulation } from '../engine/sim/simulation.ts';
+import { planRoute } from '../engine/nav/routeFollower.ts';
+import { activeTarget } from '../engine/markings/target.ts';
+import type { LanePath } from '../engine/nav/lanePath.ts';
+import type { Sensor } from '../engine/car/sensor.ts';
+import { Hud } from '../ui/hud.ts';
 import { h } from '../ui/dom.ts';
 import { HelpOverlay } from '../ui/panels/helpOverlay.ts';
 import { WorldPanel } from '../ui/panels/worldPanel.ts';
@@ -109,6 +115,23 @@ export class App {
   private readonly library: LibraryDialog;
   private lastThumbAt = -Infinity;
   private importing = false;
+  /** The running simulation (Simulate/Train modes). */
+  sim: Simulation | null = null;
+  private simKey = '';
+  private simRoute: { path: LanePath; from: number; to: number } | null = null;
+  private manualCrashAt = -1;
+  private readonly noSensors: Sensor[] = [];
+  private carBuf = new Float64Array(0);
+  private carKinds = new Uint8Array(0);
+  readonly hud = new Hud([
+    { key: 'speed', label: 'Speed', suffix: ' km/h' },
+    { key: 'traffic', label: 'Traffic', smooth: false },
+    { key: 'parked', label: 'Parked', smooth: false },
+    { key: 'arrivals', label: 'Trips done', smooth: false },
+    { key: 'crashes', label: 'Collisions', smooth: false },
+    { key: 'fps', label: 'FPS' },
+    { key: 'simms', label: 'Sim ms', decimals: 2 },
+  ]);
   private readonly fileInput: HTMLInputElement;
   private autosaveTimer = 0;
   private lastSavedSignature = '';
@@ -187,6 +210,7 @@ export class App {
         this.statusbar.el,
         this.toaster.el,
         this.minimap.el,
+        this.hud.el,
         this.progress.el,
         this.help.el,
         this.fileInput,
@@ -232,6 +256,11 @@ export class App {
       geometryStale: true,
       previewSegmentIds: null,
       lights: this.lights,
+      sim: null,
+      bestCarId: null,
+      focusSensor: null,
+      extraSensors: [],
+      route: null,
       mode: this.mode,
       editor: null,
       layers: this.layers,
@@ -241,7 +270,7 @@ export class App {
       focusCarId: null,
       reducedMotion: this.reducedMotion,
     };
-    this.loop = new MainLoop({ step: () => {}, frame: (f) => this.frame(f) });
+    this.loop = new MainLoop({ step: (dt) => this.sim?.step(dt), frame: (f) => this.frame(f) });
     this.bindGlobalEvents();
   }
 
@@ -298,6 +327,16 @@ export class App {
     frame.dtMs = f.dtMs;
     this.syncLights();
     if (this.mode === 'edit') this.lights.update(f.dtMs / 1000);
+    this.updateSim(f.dtMs);
+    const sim = this.sim;
+    frame.sim = sim;
+    frame.lights = sim ? sim.lights : this.lights;
+    frame.focusCarId = sim?.manual ? sim.manual.id : null;
+    frame.focusSensor = sim?.manualSensor ?? null;
+    frame.extraSensors = this.noSensors;
+    frame.route = sim ? this.simRoute : null;
+    if (sim?.manual)
+      this.viewport.follow(sim.manual.lerpX(f.alpha), sim.manual.lerpY(f.alpha), f.dtMs / 1000);
     this.renderer2d.render(frame);
     this.stats.drawCalls = this.renderer2d.drawCalls;
     if (this.layers.minimap) this.renderMinimap(f.timeMs);
@@ -332,6 +371,76 @@ export class App {
     this.minimap.resize(narrow ? 160 : 230, narrow ? 116 : 160, dpr);
   }
 
+  /** Creates, refreshes or discards the simulation for the current mode and world. */
+  private updateSim(dtMs: number): void {
+    if (this.mode === 'edit') {
+      if (this.sim) this.stopSim();
+      return;
+    }
+    const geo = this.worldManager.geometry;
+    if (!geo || !this.worldManager.isFresh(this.model)) return;
+    const key = `${this.model.geometryVersion}:${this.model.markings.version}`;
+    if (!this.sim || key !== this.simKey) this.startSim();
+    const sim = this.sim;
+    if (!sim) return;
+    // the manual car respawns two seconds after a crash
+    const m = sim.manual;
+    if (m?.damaged) {
+      if (this.manualCrashAt < 0) this.manualCrashAt = sim.time;
+      else if (sim.time - this.manualCrashAt > 2) {
+        sim.resetManual();
+        this.manualCrashAt = -1;
+      }
+    }
+    this.hud.setBadge(this.loop.paused ? 'Paused' : `×${this.loop.speed}`, this.loop.paused);
+    this.hud.set('speed', m ? Math.abs(m.speed) * 0.36 : 0);
+    this.hud.set('traffic', sim.traffic.cars.filter((c) => c.active).length);
+    this.hud.set('parked', sim.traffic.parkedNow);
+    this.hud.set('arrivals', sim.traffic.stats.arrivals);
+    this.hud.set('crashes', sim.damageCount.traffic + sim.damageCount.manual);
+    this.hud.set('fps', this.stats.fps);
+    this.hud.set('simms', this.stats.avgSimMs);
+    this.hud.update(dtMs, this.reducedMotion);
+  }
+
+  private startSim(): void {
+    const geo = this.worldManager.geometry;
+    if (!geo) return;
+    this.sim = new Simulation(this.model, geo, {
+      trafficCount: 14,
+      manual: true,
+      seed: this.model.seed,
+    });
+    this.simKey = `${this.model.geometryVersion}:${this.model.markings.version}`;
+    this.manualCrashAt = -1;
+    this.renderer2d.skidDecal.clear();
+    // route preview from the start to the active target
+    this.simRoute = null;
+    const target = activeTarget(this.model.markings.ofType('target'));
+    const start = this.sim.defaultSpawn();
+    if (target) {
+      const r = planRoute(
+        this.model.graph,
+        this.sim.routeGraph,
+        this.model.markings,
+        this.model.settings.roadWidth,
+        start,
+        { marking: target },
+      );
+      if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd };
+    }
+    this.loop.paused = false;
+    const m = this.sim.manual;
+    if (m) this.viewport.set({ x: m.x, y: m.y }, Math.max(this.viewport.zoom, 0.7));
+  }
+
+  private stopSim(): void {
+    this.sim = null;
+    this.simKey = '';
+    this.simRoute = null;
+    this.loop.paused = true;
+  }
+
   private renderMinimap(timeMs: number): void {
     const b = this.viewport.visibleBounds();
     const c = this.viewCorners;
@@ -347,14 +456,33 @@ export class App {
       geometry: this.worldManager.geometry,
       segments: this.model.graph.segments,
       view: c,
-      cars: null,
-      carCount: 0,
-      carKinds: null,
+      cars: this.packCars(),
+      carCount: this.sim ? this.sim.cars.length : 0,
+      carKinds: this.sim ? this.carKinds : null,
       bestCar: null,
       targets: this.targetList(),
       route: null,
       timeMs,
     });
+  }
+
+  /** Packs car positions for the minimap (reused buffers). */
+  private packCars(): Float64Array | null {
+    const sim = this.sim;
+    if (!sim) return null;
+    const n = sim.cars.length;
+    if (this.carBuf.length < n * 2) {
+      this.carBuf = new Float64Array(n * 2);
+      this.carKinds = new Uint8Array(n);
+    }
+    for (let i = 0; i < n; i++) {
+      const c = sim.cars[i];
+      if (!c) continue;
+      this.carBuf[i * 2] = c.x;
+      this.carBuf[i * 2 + 1] = c.y;
+      this.carKinds[i] = !c.active || c.damaged ? 2 : c.kind === 'traffic' ? 1 : 0;
+    }
+    return this.carBuf;
   }
 
   /** Replaces the world with a freshly generated demo city (seeded). */
@@ -813,6 +941,7 @@ export class App {
       if (e.key === 'Escape') t.blur();
       return;
     }
+    if (this.driveKey(e, true)) return;
     if (e.key === ' ') {
       e.preventDefault();
       if (!e.repeat) {
@@ -837,7 +966,30 @@ export class App {
     this.runAction(action);
   }
 
+  /** Arrow keys / WASD drive the manual car in Simulate mode. Returns true if handled. */
+  private driveKey(e: KeyboardEvent, down: boolean): boolean {
+    const sim = this.sim;
+    if (!sim?.manual || this.mode === 'edit' || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    const map: Record<string, keyof typeof sim.keys> = {
+      arrowup: 'up',
+      w: 'up',
+      arrowdown: 'down',
+      s: 'down',
+      arrowleft: 'left',
+      a: 'left',
+      arrowright: 'right',
+      d: 'right',
+    };
+    const dir = map[k];
+    if (!dir) return false;
+    e.preventDefault();
+    sim.keys[dir] = down;
+    return true;
+  }
+
   private onKeyUp(e: KeyboardEvent): void {
+    if (this.driveKey(e, false)) return;
     if (e.key === ' ') {
       this.editor.spaceDown = false;
       if (!this.spaceUsedForPan && this.mode !== 'edit') this.loop.paused = !this.loop.paused;
@@ -885,6 +1037,20 @@ export class App {
       case 'mode.toggle':
         this.setMode(this.mode === 'edit' ? 'simulate' : 'edit');
         break;
+      case 'sim.faster':
+        this.loop.speed = Math.min(8, this.loop.speed * 2);
+        this.toast(`Simulation speed ×${this.loop.speed}`);
+        break;
+      case 'sim.slower':
+        this.loop.speed = Math.max(1, this.loop.speed / 2);
+        this.toast(`Simulation speed ×${this.loop.speed}`);
+        break;
+      case 'sim.resetCar':
+        this.sim?.resetManual();
+        break;
+      case 'view.focusBest':
+        if (this.sim?.manual) this.viewport.followPausedUntil = 0;
+        break;
       case 'view.minimap':
         this.setLayer('minimap', !this.layers.minimap);
         break;
@@ -921,6 +1087,13 @@ export class App {
         lightColor: (id: number) => this.lights.colorOf(id),
         updateLights: (dt: number) => this.lights.update(dt),
         setLayer: (k: keyof LayerFlags, v: boolean) => this.setLayer(k, v),
+        setMode: (m: AppMode) => this.setMode(m),
+        setSimSpeed: (x: number) => {
+          this.loop.speed = Math.max(1, Math.min(8, Math.round(x)));
+        },
+        setKeys: (k: Partial<Record<'up' | 'down' | 'left' | 'right', boolean>>) => {
+          if (this.sim) Object.assign(this.sim.keys, k);
+        },
       },
     };
     const getters: Record<string, () => unknown> = {
@@ -943,6 +1116,30 @@ export class App {
           : null;
       },
       minimap: () => ({ staticRedraws: this.minimap.staticRedraws }),
+      sim: () => {
+        const sim = this.sim;
+        if (!sim) return null;
+        return {
+          stepCount: sim.stepCount,
+          time: sim.time,
+          paused: this.loop.paused,
+          speed: this.loop.speed,
+          carCount: sim.cars.length,
+          manual: sim.manual
+            ? {
+                x: sim.manual.x,
+                y: sim.manual.y,
+                speed: sim.manual.speed,
+                damaged: sim.manual.damaged,
+              }
+            : null,
+          traffic: {
+            ...sim.traffic.stats,
+            active: sim.traffic.cars.filter((c) => c.active).length,
+          },
+          carPositions: sim.cars.map((c) => [Math.round(c.x), Math.round(c.y)]),
+        };
+      },
       mode: () => this.mode,
       viewport: () => ({ zoom: this.viewport.zoom, center: { ...this.viewport.center } }),
       history: () => ({ undo: this.history.undoSize, canRedo: this.history.canRedo }),

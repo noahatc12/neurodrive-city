@@ -36,7 +36,8 @@ export type ActionId =
   | 'brain.discard'
   | 'file.save'
   | 'file.open'
-  | 'help.toggle';
+  | 'help.toggle'
+  | 'sim.resetCar';
 
 export interface Binding {
   /** `KeyboardEvent.key`, lower-cased for letters. */
@@ -87,6 +88,7 @@ export const BINDINGS: readonly Binding[] = [
   { key: 's', ctrl: true, action: 'file.save' },
   { key: 'o', ctrl: true, action: 'file.open' },
   { key: '?', action: 'help.toggle' },
+  { key: 'r', action: 'sim.resetCar' },
 ];
 
 /** Human-readable shortcut list for the help overlay (Space is handled specially). */
@@ -128,6 +130,8 @@ export const SHORTCUT_DOCS: readonly ShortcutDoc[] = [
   { keys: 'Tab', label: 'Toggle Edit / Simulate', group: 'Simulation' },
   { keys: 'T', label: 'Toggle training mode', group: 'Simulation' },
   { keys: 'Space', label: 'Pause / resume', group: 'Simulation' },
+  { keys: 'Arrows / WASD', label: 'Drive your car (Simulate)', group: 'Simulation' },
+  { keys: 'R', label: 'Reset your car to the start', group: 'Simulation' },
   { keys: '+ / -', label: 'Simulation speed', group: 'Simulation' },
   { keys: 'S', label: 'Save best brain', group: 'Simulation' },
   { keys: 'X', label: 'Discard saved brain', group: 'Simulation' },

@@ -318,6 +318,23 @@ export class Graph {
     return best;
   }
 
+  /** All segments within `threshold` of (x, y), nearest first. */
+  segmentsNear(x: number, y: number, threshold: number): SegmentHit[] {
+    const ids = this.segmentIndex.queryPoint(x, y, threshold, this.scratch);
+    const out: SegmentHit[] = [];
+    const p = { x, y };
+    for (const id of ids) {
+      const s = this.segmentMap.get(id);
+      if (!s) continue;
+      const t = projectParam(p, s.a, s.b);
+      const qx = s.a.x + (s.b.x - s.a.x) * t;
+      const qy = s.a.y + (s.b.y - s.a.y) * t;
+      const d = Math.hypot(qx - x, qy - y);
+      if (d <= threshold) out.push({ segment: s, t, point: { x: qx, y: qy }, distance: d });
+    }
+    return out.sort((a, b) => a.distance - b.distance);
+  }
+
   /** Points whose coordinates fall inside the rectangle (inclusive). */
   pointsInRect(minX: number, minY: number, maxX: number, maxY: number): Point[] {
     const out: Point[] = [];

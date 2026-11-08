@@ -120,20 +120,34 @@ export class SpatialHash {
     const y0 = Math.floor(minY / this.cellSize);
     const x1 = Math.floor(maxX / this.cellSize);
     const y1 = Math.floor(maxY / this.cellSize);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.cells.size * 2) {
+      // Huge query (e.g. "nearest anything"): scanning every cell in the rectangle would
+      // visit mostly empty cells, so walk the occupied cells instead.
+      for (const [key, cell] of this.cells) {
+        const cx = Math.floor(key / SPAN) - OFFSET;
+        const cy = (key % SPAN) - OFFSET;
+        if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
+        this.collect(cell, stamp, out);
+      }
+      return out;
+    }
     for (let cx = x0; cx <= x1; cx++) {
       for (let cy = y0; cy <= y1; cy++) {
         const cell = this.cells.get(cellKey(cx, cy));
-        if (!cell) continue;
-        for (let i = 0; i < cell.length; i++) {
-          const id = cell[i] as number;
-          this.ensureStampCapacity(id);
-          if (this.stamps[id] === stamp) continue;
-          this.stamps[id] = stamp;
-          out.push(id);
-        }
+        if (cell) this.collect(cell, stamp, out);
       }
     }
     return out;
+  }
+
+  private collect(cell: readonly number[], stamp: number, out: number[]): void {
+    for (let i = 0; i < cell.length; i++) {
+      const id = cell[i] as number;
+      this.ensureStampCapacity(id);
+      if (this.stamps[id] === stamp) continue;
+      this.stamps[id] = stamp;
+      out.push(id);
+    }
   }
 
   /** Items near a point: cells overlapping the square of half-size `radius`. */

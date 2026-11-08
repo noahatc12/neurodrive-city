@@ -16,6 +16,7 @@ export interface NDGeometry {
 
 export interface NDHooks {
   ready: boolean;
+  mode: 'edit' | 'simulate' | 'train';
   world: {
     graph: {
       pointCount: number;
@@ -42,6 +43,10 @@ export interface NDHooks {
     autosaveNow(): Promise<void>;
     loadDemo(seed?: number, opts?: Record<string, number>): void;
     setLayer(key: string, value: boolean): void;
+    loadBundled(path: string): Promise<boolean>;
+    setMode(mode: 'edit' | 'simulate' | 'train'): void;
+    setSimSpeed(x: number): void;
+    setKeys(k: Partial<Record<'up' | 'down' | 'left' | 'right', boolean>>): void;
   };
 }
 

@@ -978,3 +978,61 @@ input[type='range'] {
   gap: 6px;
   justify-content: space-between;
 }
+
+/* ==========================================================================
+   HUD
+   ========================================================================== */
+.hud {
+  position: absolute;
+  top: calc(var(--topbar-h) + 22px);
+  left: 10px;
+  width: 230px;
+  padding: 10px 14px 12px;
+  z-index: 14;
+  transition:
+    opacity var(--dur) var(--ease-out),
+    translate var(--dur) var(--ease-out);
+}
+.app[data-mode='edit'] .hud {
+  opacity: 0;
+  translate: -16px 0;
+  pointer-events: none;
+}
+.hud-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.hud-title {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.hud-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #22d3ee22;
+  color: var(--cyan);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.hud-badge.warn {
+  background: #fbbf2422;
+  color: var(--amber);
+}
+.hud-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.hud-grid dt {
+  color: var(--text-dim);
+}
+.hud-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

@@ -7,6 +7,9 @@ import type { Vec2 } from '../engine/math/vec2.ts';
 import type { WorldModel } from '../engine/world/worldModel.ts';
 import type { WorldGeometry } from '../engine/world/world.ts';
 import type { TrafficLightSystem } from '../engine/markings/trafficLightController.ts';
+import type { Simulation } from '../engine/sim/simulation.ts';
+import type { Sensor } from '../engine/car/sensor.ts';
+import type { LanePath } from '../engine/nav/lanePath.ts';
 import type { MarkingType } from '../engine/markings/marking.ts';
 import type { Side } from '../engine/markings/marking.ts';
 
@@ -86,6 +89,16 @@ export interface FrameContext {
   previewSegmentIds: ReadonlySet<number> | null;
   /** Traffic light controllers (lamp states for rendering). */
   lights: TrafficLightSystem | null;
+  /** Running simulation (null in Edit mode). */
+  sim: Simulation | null;
+  /** Best car of the current generation (Phase 6), for highlighting. */
+  bestCarId: number | null;
+  /** Sensor of the focused car (drawn with glow). */
+  focusSensor: Sensor | null;
+  /** Additional sensors to draw (the "all rays" debug toggle). */
+  extraSensors: readonly Sensor[];
+  /** Route to highlight: a lane path and the arc range to draw. */
+  route: { path: LanePath; from: number; to: number } | null;
   mode: AppMode;
   editor: EditorOverlay | null;
   layers: Readonly<LayerFlags>;

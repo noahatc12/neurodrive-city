@@ -19,6 +19,10 @@ import type {
 import type { WorldGeometry } from '../engine/world/world.ts';
 import { drawEditorOverlay, drawSnapGrid } from './drawEditor.ts';
 import { MarkingPainter } from './drawMarkings.ts';
+import { CarPainter, type CarDrawOptions } from './drawCars.ts';
+import { SkidDecal } from './skidDecal.ts';
+import { KIND_CAR } from './pseudo3d.ts';
+import type { Simulation } from '../engine/sim/simulation.ts';
 import {
   drawBackground,
   drawDebugLayers,
@@ -38,6 +42,23 @@ export class Canvas2DRenderer implements Renderer {
   readonly pseudo3d = new Pseudo3D();
   readonly staticCache = new StaticLayerCache();
   readonly markingPainter = new MarkingPainter();
+  readonly carPainter = new CarPainter();
+  readonly skidDecal = new SkidDecal();
+  private curSim: Simulation | null = null;
+  private readonly carOpts: CarDrawOptions = {
+    alpha: 1,
+    timeMs: 0,
+    focusId: null,
+    bestId: null,
+    reducedMotion: false,
+    showPolygons: false,
+  };
+  /** Created once: draws car `id` (index into the sim's car list) during the depth sort. */
+  private readonly drawCustom = (ctx: CanvasRenderingContext2D, kind: number, id: number): void => {
+    if (kind !== KIND_CAR || !this.curSim) return;
+    const car = this.curSim.cars[id];
+    if (car) this.carPainter.drawCar(ctx, car, this.carOpts);
+  };
   private ctx: CanvasRenderingContext2D;
   private dpr = 1;
   private paths: WorldPaths | null = null;
@@ -144,9 +165,35 @@ export class Canvas2DRenderer implements Renderer {
       this.drawCalls += 3;
     }
 
-    // pseudo-3D objects
+    const sim = frame.sim;
+    this.curSim = sim;
+    if (sim && geo) {
+      this.skidDecal.ensure(geo.data.bounds, `${geo.version}|${sim.config.seed}`);
+      this.skidDecal.update(sim.skids, frame.dtMs);
+      this.skidDecal.draw(ctx, vp.visibleBounds());
+      this.drawCalls++;
+    }
+
+    // pseudo-3D objects (buildings, trees and cars in one depth sort)
     this.pseudo3d.setCamera(vp, frame.reducedMotion ? 0.8 : 1);
     this.pseudo3d.begin(geo, vp, layers.buildings, layers.trees);
+    if (sim) {
+      const o = this.carOpts;
+      o.alpha = frame.alpha;
+      o.timeMs = frame.timeMs;
+      o.focusId = frame.focusCarId;
+      o.bestId = frame.bestCarId;
+      o.reducedMotion = frame.reducedMotion;
+      o.showPolygons = layers.debugCarPolygons;
+      const vb = vp.visibleBounds(80);
+      const cars = sim.cars;
+      for (let i = 0; i < cars.length; i++) {
+        const c = cars[i];
+        if (!c || !c.active) continue;
+        if (c.x < vb.minX || c.x > vb.maxX || c.y < vb.minY || c.y > vb.maxY) continue;
+        this.pseudo3d.addItem(KIND_CAR, i, c.x, c.y);
+      }
+    }
     if (geo) {
       this.pseudo3d.drawShadows(ctx, geo);
       this.drawCalls++;
@@ -174,8 +221,29 @@ export class Canvas2DRenderer implements Renderer {
       }
       this.drawCalls += frame.model.markings.size + 1;
     }
-    this.pseudo3d.draw(ctx, geo, null);
+    if (frame.route) {
+      this.carPainter.drawRoute(
+        ctx,
+        frame.route.path,
+        frame.route.from,
+        frame.route.to,
+        frame.timeMs,
+        vp.zoom,
+        frame.reducedMotion,
+      );
+      this.drawCalls += 2;
+    }
+    this.pseudo3d.draw(ctx, geo, sim ? this.drawCustom : null);
     this.drawCalls += this.pseudo3d.drawn;
+    if (sim) {
+      this.carPainter.drawParticles(ctx, sim.particles);
+      for (const s of frame.extraSensors) this.carPainter.drawSensor(ctx, s, false);
+      if (frame.focusSensor) this.carPainter.drawSensor(ctx, frame.focusSensor, true);
+      const focus = frame.focusCarId !== null ? sim.getCar(frame.focusCarId) : undefined;
+      if (focus && !frame.reducedMotion)
+        this.carPainter.drawSpeedLines(ctx, focus, frame.alpha, frame.timeMs);
+      this.drawCalls += 3;
+    }
 
     if (frame.editor && frame.mode === 'edit') {
       drawEditorOverlay(
