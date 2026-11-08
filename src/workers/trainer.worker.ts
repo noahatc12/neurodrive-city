@@ -8,7 +8,7 @@
  * @module workers/trainer.worker
  */
 import { parseBrain } from '../engine/ai/brainSchema.ts';
-import type { HeadlessTrainer} from '../engine/ai/trainer.ts';
+import type { HeadlessTrainer } from '../engine/ai/trainer.ts';
 import { cityTrainer, infiniteTrainer } from '../engine/ai/trainer.ts';
 import { parseWorldText } from '../engine/io/serialize.ts';
 import { generateWorld, worldInputFrom, WorldGeometry } from '../engine/world/world.ts';
@@ -60,6 +60,8 @@ async function run(msg: Extract<TrainerRequest, { type: 'start' }>): Promise<voi
           best: rec.best,
           average: rec.average,
           bestEver: pop.bestEverFitness,
+          stage: pop.stage,
+          horizon: pop.horizon,
           steps: trainer.steps,
           elapsedMs: performance.now() - t0,
         });
@@ -72,6 +74,7 @@ async function run(msg: Extract<TrainerRequest, { type: 'start' }>): Promise<voi
       generation: pop.generation,
       bestEver: pop.bestEverFitness,
       history: pop.history.map((r) => ({ ...r })),
+      horizon: pop.horizon,
       steps: trainer.steps,
       elapsedMs: performance.now() - t0,
     });

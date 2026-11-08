@@ -1,8 +1,9 @@
 /**
  * Training controls (spec G3, G5, G8, F5): number of AI cars, mutation amount, simulation
  * speed, selection strategy, turbo training, the curvy-road toggle (infinite road), the
- * AI navigation toggle (city), and the brain buttons (save, discard, next generation,
- * reset, export, import). Lives inside the network panel in Train mode.
+ * route-input and curriculum toggles with the curriculum stage (city), and the brain
+ * buttons (save, discard, next generation, reset, export, import). Lives inside the
+ * network panel in Train mode.
  * @module ui/panels/trainingPanel
  */
 import type { Selection } from '../../engine/ai/evolution.ts';
@@ -17,6 +18,7 @@ export interface TrainingCallbacks {
   onTurbo: (on: boolean) => void;
   onCurvy: (on: boolean) => void;
   onNav: (on: boolean) => void;
+  onCurriculum: (on: boolean) => void;
   onSave: () => void;
   onDiscard: () => void;
   onNextGen: () => void;
@@ -39,6 +41,9 @@ export class TrainingPanel {
   private readonly curvyRow: HTMLElement;
   private readonly nav: HTMLInputElement;
   private readonly navRow: HTMLElement;
+  private readonly curriculum: HTMLInputElement;
+  private readonly curriculumRow: HTMLElement;
+  private readonly stage: HTMLElement;
   private readonly brainNote: HTMLElement;
 
   constructor(cb: TrainingCallbacks) {
@@ -85,18 +90,40 @@ export class TrainingPanel {
     this.curvyRow = h('label', { class: 'check' }, this.curvy, h('span', { text: 'Curvy road' }));
     this.nav = h('input', {
       type: 'checkbox',
-      aria: { label: 'AI navigation: add route inputs (waypoint angle and speed)' },
+      attrs: { checked: '' },
+      aria: {
+        label:
+          'Route inputs (lane + waypoints): lane offset, heading error, two route waypoints and speed',
+      },
       onchange: () => cb.onNav(this.nav.checked),
     });
     this.navRow = h(
       'label',
       {
         class: 'check',
-        title: 'Adds two inputs: the signed angle to the next route waypoint and the speed',
+        title:
+          'Adds five inputs: offset from the lane centre, heading error against the lane, the angles to the route 60 and 160 units ahead, and the speed',
       },
       this.nav,
-      h('span', { text: 'Route inputs (AI navigation)' }),
+      h('span', { text: 'Route inputs (lane + waypoints)' }),
     );
+    this.curriculum = h('input', {
+      type: 'checkbox',
+      attrs: { checked: '' },
+      aria: { label: 'Curriculum: start with the first straight and grow the route' },
+      onchange: () => cb.onCurriculum(this.curriculum.checked),
+    });
+    this.curriculumRow = h(
+      'label',
+      {
+        class: 'check',
+        title:
+          'Evaluates the first 320 units of the route, then 260 more whenever 10% of the cars (or the best car twice in a row) reach the end',
+      },
+      this.curriculum,
+      h('span', { text: 'Curriculum' }),
+    );
+    this.stage = h('span', { class: 'stage-note tabular', text: '' });
     const file = h('input', {
       type: 'file',
       class: 'sr-only',
@@ -129,6 +156,7 @@ export class TrainingPanel {
         this.curvyRow,
       ),
       h('div', { class: 'row' }, this.navRow),
+      h('div', { class: 'row' }, this.curriculumRow, this.stage),
       h(
         'div',
         { class: 'btn-grid' },
@@ -187,6 +215,13 @@ export class TrainingPanel {
     this.el.hidden = !train;
     this.curvyRow.hidden = !infinite;
     this.navRow.hidden = infinite;
+    this.curriculumRow.hidden = infinite;
+    this.stage.hidden = infinite;
+  }
+
+  /** Curriculum progress, e.g. "Stage 3 · route 15%" (empty to clear). */
+  setStage(text: string): void {
+    if (this.stage.textContent !== text) this.stage.textContent = text;
   }
 
   setSpeed(x: number): void {
@@ -203,6 +238,7 @@ export class TrainingPanel {
     curvy: boolean,
     turbo: boolean,
     nav: boolean,
+    curriculum: boolean,
   ): void {
     if (document.activeElement !== this.carsInput) this.carsInput.value = String(cars);
     this.carsOut.value = String(cars);
@@ -212,6 +248,7 @@ export class TrainingPanel {
     this.curvy.checked = curvy;
     this.turbo.checked = turbo;
     this.nav.checked = nav;
+    this.curriculum.checked = curriculum;
   }
 
   setBrainNote(text: string): void {

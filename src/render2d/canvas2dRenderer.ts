@@ -237,6 +237,7 @@ export class Canvas2DRenderer implements Renderer {
         frame.timeMs,
         vp.zoom,
         frame.reducedMotion,
+        frame.route.laneFactor,
       );
       this.drawCalls += 2;
     }

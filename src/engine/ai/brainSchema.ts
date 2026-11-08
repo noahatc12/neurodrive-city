@@ -22,6 +22,12 @@ export interface BrainTraining {
   world: string;
   mutation: number;
   date: string;
+  /** Population size (v2, optional). */
+  population?: number;
+  /** In-lane fraction of the validation drive (v2, optional; city brains). */
+  inLaneFraction?: number;
+  /** Free-form validation summary (v2, optional). */
+  validation?: string;
 }
 
 export interface BrainFile {
@@ -136,6 +142,9 @@ export function parseBrain(input: unknown): BrainResult {
       world: typeof t.world === 'string' ? t.world : 'unknown',
       mutation: num(t.mutation) ? t.mutation : 0.1,
       date: typeof t.date === 'string' ? t.date : new Date(0).toISOString(),
+      ...(num(t.population) ? { population: t.population } : {}),
+      ...(num(t.inLaneFraction) ? { inLaneFraction: t.inLaneFraction } : {}),
+      ...(typeof t.validation === 'string' ? { validation: t.validation } : {}),
     },
   };
   return { ok: true, net, file };

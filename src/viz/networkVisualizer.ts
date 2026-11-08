@@ -50,6 +50,10 @@ export class NetworkVisualizer {
   framesDrawn = 0;
   /** How many inputs are sensor rays (the rest are navigation inputs). */
   rayCount = 5;
+  /** Spread of the sensor rays (radians), for the input glyphs. */
+  raySpread = Math.PI / 2;
+  /** Labels of the inputs after the rays (route inputs). */
+  extraLabels: readonly string[] = [];
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -80,6 +84,21 @@ export class NetworkVisualizer {
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
     this.staticKey = '';
+  }
+
+  /** Describes the inputs: ray glyphs fanned over `spread`, then labelled extras. */
+  setInputs(rayCount: number, labels: readonly string[], spread: number): void {
+    if (
+      rayCount !== this.rayCount ||
+      spread !== this.raySpread ||
+      labels.length !== this.extraLabels.length ||
+      labels.some((l, i) => l !== this.extraLabels[i])
+    ) {
+      this.rayCount = rayCount;
+      this.raySpread = spread;
+      this.extraLabels = labels;
+      this.staticKey = '';
+    }
   }
 
   /**
@@ -126,15 +145,19 @@ export class NetworkVisualizer {
     });
   }
 
+  /** Node radius: scales with the panel, and shrinks so the widest layer never overlaps. */
   private nodeRadius(): number {
-    return Math.max(7, Math.min(13, this.width / 26));
+    let widest = 1;
+    if (this.net) for (const n of this.net.topology) if (n > widest) widest = n;
+    const gap = widest > 1 ? (this.width - 56) / (widest - 1) : Infinity;
+    return Math.max(5, Math.min(13, this.width / 26, gap * 0.42));
   }
 
   private ensureStatic(): void {
     const net = this.net;
     const c = this.staticCtx;
     if (!net || !c) return;
-    const key = `${this.width}x${this.height}|${net.topology.join(',')}|${this.weightsKey}`;
+    const key = `${this.width}x${this.height}|${net.topology.join(',')}|${this.weightsKey}|${this.rayCount}|${this.raySpread}|${this.extraLabels.join(',')}`;
     if (key === this.staticKey) return;
     this.staticKey = key;
     this.layout();
@@ -155,14 +178,21 @@ export class NetworkVisualizer {
         c.strokeStyle = 'rgba(147, 161, 184, 0.8)';
         c.fillStyle = 'rgba(147, 161, 184, 0.9)';
         if (i < rays) {
-          const a = rays === 1 ? 0 : Math.PI / 4 - (Math.PI / 2) * (i / (rays - 1));
+          const spread = this.raySpread;
+          const a = rays === 1 ? 0 : spread / 2 - spread * (i / (rays - 1));
           c.lineWidth = 1.5;
           c.beginPath();
           c.moveTo(x, y + 14);
           c.lineTo(x - Math.sin(a) * 12, y + 14 - Math.cos(a) * 12);
           c.stroke();
         } else {
-          c.fillText(i === rays ? 'θ' : 'v', x, y);
+          // route inputs: small labels, alternating rows so neighbours never collide
+          const k = i - rays;
+          const label = this.extraLabels[k] ?? (k === 0 ? 'θ' : 'v');
+          const prev = c.font;
+          c.font = `600 ${Math.max(8, Math.round(r * 0.95))}px system-ui, sans-serif`;
+          c.fillText(label, x, y + (k % 2) * Math.max(9, r));
+          c.font = prev;
         }
       }
     }
@@ -289,7 +319,7 @@ export class NetworkVisualizer {
             hoverBest = d - 6;
             hoverText = biases
               ? `value ${v.toFixed(3)}  bias ${(biases[k] as number).toFixed(3)}`
-              : `input ${k}: ${v.toFixed(3)}`;
+              : `${k < this.rayCount ? `ray ${k}` : (this.extraLabels[k - this.rayCount] ?? `input ${k}`)}: ${v.toFixed(3)}`;
           }
         }
       }

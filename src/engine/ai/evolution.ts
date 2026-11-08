@@ -8,7 +8,9 @@
  *            all crashed / stuck, or time limit
  *                       ▼
  *   selection:  course     → best brain kept exactly (car 0); everyone else = mutate(best)
- *               tournament → best kept; others = mutate(crossover(tournament(k), tournament(k)))
+ *               tournament → `elite` brains kept exactly (the best ever, then this
+ *                            generation's next best); others =
+ *                            mutate(crossover(tournament(k), tournament(k)))
  *                       ▼
  *   generation g+1 (no page reload)
  * ```
@@ -16,15 +18,31 @@
  * Fitness is distance progressed (lane-credited route progress, coverage or −y depending
  * on the world). A crash multiplies it by 0.8, and so does a lane violation (more than
  * 1 s over the centre line), which also eliminates the car; a car that makes no
- * progress for `stuckTimeout` seconds is eliminated. The best car of the current generation is tracked live so the camera
- * can follow it.
+ * progress for `stuckTimeout` seconds is eliminated. The best car of the current
+ * generation is tracked live so the camera can follow it.
+ *
+ * City worlds train with {@link CITY_EVOLUTION}: route inputs, tanh, tournament
+ * selection with three elites, a route curriculum and seeded spawn jitter.
+ *
+ * Curriculum. With one Start every car begins on the same straight, so no car sees a
+ * corner until the straight is solved. The evaluated route is therefore capped at a
+ * horizon that starts at min(route, 320) units and grows by 260 whenever at least 10% of
+ * the cars reach it in a generation, or the best car reaches it in two generations in a
+ * row; reaching the horizon freezes a car with full credit and the arrival bonus.
+ *
+ * ```
+ *   stage 1   S ━━━━━━━┫ 320                 (the first straight)
+ *   stage 2   S ━━━━━━━━━━━━━┫ 580           (into the first corner)
+ *   ...
+ *   stage k   S ━━━━━━━━━━━━━━━━━━━━━━━━━━ T (the whole route)
+ * ```
  *
  * @module engine/ai/evolution
  */
 import type { Car } from '../car/car.ts';
 import { createCar } from '../car/carFactory.ts';
 import { HIT_NONE } from '../car/damage.ts';
-import { Sensor, type SensorConfig } from '../car/sensor.ts';
+import { DEFAULT_CITY_SENSOR, Sensor, type SensorConfig } from '../car/sensor.ts';
 import { Rng } from '../math/rng.ts';
 import {
   OBSERVATION_SIZE,
@@ -55,6 +73,19 @@ export interface EvolutionConfig {
   /** Population cars collide with traffic (always) and sensors see traffic cars. */
   seeTraffic: boolean;
   /**
+   * Brains copied unmutated into the next generation under tournament selection: the
+   * best brain ever first, then this generation's next best (course selection keeps one).
+   */
+  elite: number;
+  /** Route curriculum (city worlds with a target): evaluate a growing part of the route. */
+  curriculum: boolean;
+  /** Horizon (units) the curriculum starts from; 0 = {@link CURRICULUM_START}. */
+  startHorizon: number;
+  /** Seeded spawn jitter: lateral offset, ± this fraction of the road width. */
+  jitterLateral: number;
+  /** Seeded spawn jitter: heading, ± this many radians. */
+  jitterHeading: number;
+  /**
    * Re-seed the world's traffic at every generation (fair comparisons while training).
    * Off for the Simulate-mode demo car, whose respawns must not reset the city.
    */
@@ -74,9 +105,51 @@ export const DEFAULT_EVOLUTION: Readonly<EvolutionConfig> = Object.freeze({
   sensor: {},
   navInputs: false,
   seeTraffic: true,
+  elite: 1,
+  curriculum: false,
+  startHorizon: 0,
+  jitterLateral: 0,
+  jitterHeading: 0,
   resetWorldEachGeneration: true,
   seed: 1,
 });
+
+/** First curriculum horizon (units of route). */
+export const CURRICULUM_START = 320;
+/** Horizon growth per curriculum stage (units). */
+export const CURRICULUM_STEP = 260;
+/** Share of the population that must reach the horizon for it to grow. */
+export const CURRICULUM_SHARE = 0.1;
+
+/**
+ * Training defaults for city worlds (the infinite road keeps {@link DEFAULT_EVOLUTION},
+ * the course homage): route inputs, 7 rays over 5π/6 (topology [12, 8, 4]), tanh,
+ * tournament selection (k = 5) with crossover and three elites, mutation 0.12, the route
+ * curriculum and ±0.08 road widths / ±4° of spawn jitter.
+ */
+export const CITY_EVOLUTION: Readonly<Partial<EvolutionConfig>> = Object.freeze({
+  navInputs: true,
+  activation: 'tanh',
+  hidden: [8],
+  selection: 'tournament',
+  tournamentK: 5,
+  mutation: 0.12,
+  elite: 3,
+  sensor: { ...DEFAULT_CITY_SENSOR },
+  curriculum: true,
+  jitterLateral: 0.08,
+  jitterHeading: (4 * Math.PI) / 180,
+});
+
+/** {@link CITY_EVOLUTION} with overrides (the sensor is merged, not replaced). */
+export function cityEvolution(over: Partial<EvolutionConfig> = {}): Partial<EvolutionConfig> {
+  return {
+    ...CITY_EVOLUTION,
+    ...over,
+    hidden: [...(over.hidden ?? CITY_EVOLUTION.hidden ?? [8])],
+    sensor: { ...CITY_EVOLUTION.sensor, ...over.sensor },
+  };
+}
 
 export interface GenerationRecord {
   generation: number;
@@ -84,6 +157,11 @@ export interface GenerationRecord {
   average: number;
   /** Simulation seconds the generation lasted. */
   duration: number;
+  /** Cars that reached the end of the evaluated route (the target, or the horizon). */
+  reached?: number;
+  /** Curriculum stage (1-based) and horizon (units) the generation was evaluated at. */
+  stage?: number;
+  horizon?: number;
 }
 
 /**
@@ -119,7 +197,14 @@ export class Population implements SimExtension {
   /** Best brain seen across all generations, with its fitness. */
   bestEver: NeuralNetwork;
   bestEverFitness = 0;
+  /** Curriculum stage (1-based). */
+  stage = 1;
+  /** Evaluated route length in units (Infinity without a route). */
+  horizon = Infinity;
+  private bestReachedLast = false;
   private readonly rng: Rng;
+  /** Spawn jitter has its own stream so turning it on does not change the brains. */
+  private readonly jitter: Rng;
   private tracker: ProgressTracker;
   private readonly lastProgress: Float64Array;
   private readonly lastImproveAt: Float64Array;
@@ -137,6 +222,9 @@ export class Population implements SimExtension {
     const n = Math.max(1, Math.min(1000, Math.round(this.config.population)));
     this.config.population = n;
     this.rng = new Rng(this.config.seed);
+    this.jitter = new Rng((this.config.seed ^ 0x5eed1e) >>> 0);
+    this.config.elite = Math.max(1, Math.min(n, Math.round(this.config.elite)));
+    if (this.config.startHorizon > 0) this.horizon = this.config.startHorizon;
     const probe = new Sensor(this.config.sensor);
     const inputCount = probe.rayCount + (this.config.navInputs ? NAV_INPUTS.length : 0);
     this.topology = [inputCount, ...this.config.hidden, 4];
@@ -189,6 +277,31 @@ export class Population implements SimExtension {
     return this.tracker.laneFactor?.(i) ?? Number.NaN;
   }
 
+  /** Length of the whole route the tracker follows (NaN without one). */
+  get routeLength(): number {
+    return this.tracker.routeLength ?? Number.NaN;
+  }
+
+  /** Share of the route evaluated this generation (1 without a curriculum or route). */
+  get routeShare(): number {
+    const len = this.routeLength;
+    return Number.isFinite(len) && len > 0 ? Math.min(1, this.horizon / len) : 1;
+  }
+
+  /** Applies the curriculum horizon to the current tracker. */
+  private applyHorizon(): void {
+    const t = this.tracker;
+    const len = t.routeLength;
+    if (!t.setHorizon || len === undefined) {
+      this.horizon = Infinity;
+      return;
+    }
+    if (!this.config.curriculum) this.horizon = len;
+    else if (!Number.isFinite(this.horizon)) this.horizon = Math.min(len, CURRICULUM_START);
+    this.horizon = Math.min(this.horizon, len);
+    t.setHorizon(this.horizon);
+  }
+
   /** The current generation's best car. */
   get bestCar(): Car {
     return this.cars[this.bestIndex] as Car;
@@ -206,10 +319,18 @@ export class Population implements SimExtension {
   private spawnAll(host: SimHost): void {
     if (this.config.resetWorldEachGeneration) host.resetForGeneration?.();
     this.tracker = host.createProgressTracker(this.cars.length);
+    this.applyHorizon();
+    const jl = this.config.jitterLateral * host.roadWidth;
+    const jh = this.config.jitterHeading;
     for (let i = 0; i < this.cars.length; i++) {
       const c = this.cars[i] as Car;
       const p = host.spawnPose(i);
-      c.reset(p.x, p.y, p.angle);
+      if (jl > 0 || jh > 0) {
+        // offset along the right vector of the pose, (cos a, −sin a), then turn
+        const off = jl > 0 ? this.jitter.range(-jl, jl) : 0;
+        const da = jh > 0 ? this.jitter.range(-jh, jh) : 0;
+        c.reset(p.x + Math.cos(p.angle) * off, p.y - Math.sin(p.angle) * off, p.angle + da);
+      } else c.reset(p.x, p.y, p.angle);
       c.active = true;
       this.tracker.reset(i, c);
       this.sensors[i]?.clear();
@@ -311,16 +432,24 @@ export class Population implements SimExtension {
       sum += f;
       if (f > (this.fitness[bi] as number)) bi = i;
     }
+    const tracker = this.tracker;
+    let reached = 0;
+    if (tracker.finished) for (let i = 0; i < n; i++) if (tracker.finished(i)) reached++;
     const rec: GenerationRecord = {
       generation: this.generation,
       best: this.fitness[bi] as number,
       average: sum / n,
       duration: this.genTime,
+      reached,
+      stage: this.stage,
+      horizon: this.horizon,
     };
+    this.advanceCurriculum(reached, tracker.finished?.(bi) ?? false);
     this.history.push(rec);
     if (this.history.length > 500) this.history.shift();
     // Elitism: always keep the best brain seen so far (it may come from an older generation).
-    if (rec.best >= this.bestEverFitness) {
+    const newBest = rec.best >= this.bestEverFitness;
+    if (newBest) {
       this.bestEverFitness = rec.best;
       this.bestEver = (this.brains[bi] as NeuralNetwork).clone();
     }
@@ -339,7 +468,12 @@ export class Population implements SimExtension {
         return parents[bestIdx] as NeuralNetwork;
       };
       (this.brains[0] as NeuralNetwork).copyFrom(keeper);
-      for (let i = 1; i < n; i++) {
+      // further elites: this generation's next best, unmutated (skip the one that just
+      // became the best ever, which is already in slot 0)
+      let e = 1;
+      for (let r = newBest ? 1 : 0; r < n && e < this.config.elite; r++, e++)
+        (this.brains[e] as NeuralNetwork).copyFrom(parents[r] as NeuralNetwork);
+      for (let i = e; i < n; i++) {
         const child = crossover(pick(), pick(), this.rng);
         mutate(child, this.config.mutation, this.rng);
         (this.brains[i] as NeuralNetwork).copyFrom(child);
@@ -357,6 +491,18 @@ export class Population implements SimExtension {
     return rec;
   }
 
+  /** Grows the curriculum horizon after a generation (see the module notes). */
+  private advanceCurriculum(reached: number, bestReached: boolean): void {
+    const len = this.routeLength;
+    if (!this.config.curriculum || !Number.isFinite(len) || this.horizon >= len) return;
+    const n = this.cars.length;
+    if (reached >= CURRICULUM_SHARE * n || (bestReached && this.bestReachedLast)) {
+      this.horizon = Math.min(len, this.horizon + CURRICULUM_STEP);
+      this.stage++;
+      this.bestReachedLast = false;
+    } else this.bestReachedLast = bestReached;
+  }
+
   /** Restarts from generation 0 with random brains (or a seed brain). */
   reset(host: SimHost, seedBrain: NeuralNetwork | null = null): void {
     for (let i = 0; i < this.brains.length; i++) {
@@ -372,6 +518,9 @@ export class Population implements SimExtension {
     this.generation = 0;
     this.history.length = 0;
     this.bestEverFitness = 0;
+    this.stage = 1;
+    this.horizon = this.config.startHorizon > 0 ? this.config.startHorizon : Infinity;
+    this.bestReachedLast = false;
     this.bestEver = (this.brains[0] as NeuralNetwork).clone();
     this.spawnAll(host);
   }

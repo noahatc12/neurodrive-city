@@ -87,6 +87,14 @@ export interface CarDrawOptions {
   showPolygons: boolean;
 }
 
+/** Route colours [glow, dashes] by lane factor (precomputed: no per-frame strings). */
+const ROUTE_TINT = {
+  none: ['rgba(34, 211, 238, 0.18)', 'rgba(34, 211, 238, 0.85)'],
+  good: ['rgba(163, 230, 53, 0.2)', 'rgba(163, 230, 53, 0.9)'],
+  warn: ['rgba(251, 191, 36, 0.2)', 'rgba(251, 191, 36, 0.9)'],
+  bad: ['rgba(248, 113, 113, 0.22)', 'rgba(248, 113, 113, 0.92)'],
+} as const;
+
 export class CarPainter {
   /** Sprites indexed by colour index × 2 + damaged (all cars share one size). */
   private readonly sprites: (HTMLCanvasElement | undefined)[] = [];
@@ -206,7 +214,11 @@ export class CarPainter {
     ctx.globalCompositeOperation = prev;
   }
 
-  /** Animated glowing route (dash offset scrolls along the travel direction). */
+  /**
+   * Animated glowing route (dash offset scrolls along the travel direction), tinted by
+   * the focused AI car's lane factor: green in lane, amber partly out, red off it
+   * (cyan when no AI car follows it).
+   */
   drawRoute(
     ctx: CanvasRenderingContext2D,
     path: LanePath,
@@ -215,6 +227,7 @@ export class CarPainter {
     timeMs: number,
     zoom: number,
     reduced: boolean,
+    laneFactor = Number.NaN,
   ): void {
     if (path.count < 2) return;
     ctx.save();
@@ -232,12 +245,19 @@ export class CarPainter {
         started = true;
       } else ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.18)';
+    const tint = Number.isNaN(laneFactor)
+      ? ROUTE_TINT.none
+      : laneFactor >= 1
+        ? ROUTE_TINT.good
+        : laneFactor > 0
+          ? ROUTE_TINT.warn
+          : ROUTE_TINT.bad;
+    ctx.strokeStyle = tint[0];
     ctx.lineWidth = 12;
     ctx.stroke();
     ctx.setLineDash([16, 14]);
     ctx.lineDashOffset = reduced ? 0 : -timeMs / 25;
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.85)';
+    ctx.strokeStyle = tint[1];
     ctx.lineWidth = Math.max(3, 2 / zoom);
     ctx.stroke();
     ctx.restore();

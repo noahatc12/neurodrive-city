@@ -97,8 +97,11 @@ export interface FrameContext {
   focusSensor: Sensor | null;
   /** Additional sensors to draw (the "all rays" debug toggle). */
   extraSensors: readonly Sensor[];
-  /** Route to highlight: a lane path and the arc range to draw. */
-  route: { path: LanePath; from: number; to: number } | null;
+  /**
+   * Route to highlight: a lane path, the arc range to draw and the focused AI car's lane
+   * factor (1 in lane, 0 off it; NaN when no AI car follows the route), which tints it.
+   */
+  route: RouteOverlay | null;
   mode: AppMode;
   editor: EditorOverlay | null;
   layers: Readonly<LayerFlags>;
@@ -108,6 +111,13 @@ export interface FrameContext {
   dtMs: number;
   focusCarId: number | null;
   reducedMotion: boolean;
+}
+
+export interface RouteOverlay {
+  path: LanePath;
+  from: number;
+  to: number;
+  laneFactor: number;
 }
 
 export interface Renderer {

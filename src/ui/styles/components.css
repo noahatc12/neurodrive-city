@@ -1198,6 +1198,12 @@ input[type='range'] {
   font-size: 11px;
   color: var(--text-faint);
 }
+.stage-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
 .hud-legend {
   display: flex;
   flex-wrap: wrap;

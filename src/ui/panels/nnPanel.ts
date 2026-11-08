@@ -140,9 +140,24 @@ export class NnPanel {
     this.training.setMode(train, infinite);
   }
 
-  setNetwork(net: NeuralNetwork | null, weightsKey: number, rayCount: number): void {
-    this.viz.rayCount = rayCount;
+  /**
+   * Shows the focused car's brain: `rayCount` inputs drawn as ray glyphs fanned over
+   * `spread`, then the `labels` of the remaining (route) inputs.
+   */
+  setNetwork(
+    net: NeuralNetwork | null,
+    weightsKey: number,
+    rayCount: number,
+    labels: readonly string[] = [],
+    spread = Math.PI / 2,
+  ): void {
+    this.viz.setInputs(rayCount, labels, spread);
     this.viz.setNetwork(net, weightsKey);
+  }
+
+  /** Curriculum stage line in the training controls. */
+  setStage(text: string): void {
+    this.training.setStage(text);
   }
 
   setSpeed(x: number): void {
@@ -156,8 +171,9 @@ export class NnPanel {
     curvy: boolean,
     turbo: boolean,
     nav = false,
+    curriculum = false,
   ): void {
-    this.training.syncControls(cars, mutation, selection, curvy, turbo, nav);
+    this.training.syncControls(cars, mutation, selection, curvy, turbo, nav, curriculum);
   }
 
   setBrainNote(text: string): void {

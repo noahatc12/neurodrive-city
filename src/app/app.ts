@@ -32,12 +32,16 @@ import { LibraryDialog } from '../ui/panels/libraryDialog.ts';
 import { Simulation } from '../engine/sim/simulation.ts';
 import { planRoute } from '../engine/nav/routeFollower.ts';
 import { activeTarget } from '../engine/markings/target.ts';
-import type { LanePath } from '../engine/nav/lanePath.ts';
 import { Hud } from '../ui/hud.ts';
 import { NnPanel } from '../ui/panels/nnPanel.ts';
 import {
+  CITY_EVOLUTION,
+  DEFAULT_EVOLUTION,
   NAV_INPUTS,
+  NAV_LABELS,
   Population,
+  cityEvolution,
+  type EvolutionConfig,
   type GenerationRecord,
   type Selection,
 } from '../engine/ai/evolution.ts';
@@ -55,7 +59,7 @@ import {
 import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
 import type { SimHost } from '../engine/sim/host.ts';
 import type { Car } from '../engine/car/car.ts';
-import { Sensor } from '../engine/car/sensor.ts';
+import { DEFAULT_CITY_SENSOR, Sensor, type SensorConfig } from '../engine/car/sensor.ts';
 import type { ThreeRenderer } from '../render3d/threeRenderer.ts';
 import type { TrainerRequest, TrainerResponse } from '../workers/protocol.ts';
 import { CameraChips, nextCameraMode } from '../ui/cameraChips.ts';
@@ -67,6 +71,9 @@ import {
 } from '../ui/panels/settingsPanel.ts';
 
 const BRAIN_KEY = 'nd:brain';
+/** Network panel labels of the route inputs, in input order. */
+const NAV_INPUT_LABELS: readonly string[] = NAV_INPUTS.map((k) => NAV_LABELS[k]);
+const NO_LABELS: readonly string[] = [];
 
 /** A brain with the input names it was saved with (they decide whether it fits a world). */
 interface LoadedBrain {
@@ -89,6 +96,7 @@ import {
   type PickResult,
   type FrameContext,
   type LayerFlags,
+  type RouteOverlay,
   type ToolId,
 } from './renderer.ts';
 import {
@@ -161,16 +169,26 @@ export class App {
   population: Population | null = null;
   /** Set while the infinite road mode is active. */
   infinite: { curvy: boolean } | null = null;
-  /** Training settings (spec G3, G5). */
+  /**
+   * Training settings (spec G3, G5). Mutation and selection are kept per kind of world:
+   * cities default to the city training setup, the infinite road to the course homage.
+   */
   evo = {
     cars: 300,
-    mutation: 0.1,
-    selection: 'course' as Selection,
     timeLimit: 60,
     stuckTimeout: 5,
     /** AI navigation mode (F5): route inputs in city training. */
-    nav: false,
+    nav: CITY_EVOLUTION.navInputs ?? true,
+    /** Route curriculum in city training. */
+    curriculum: CITY_EVOLUTION.curriculum ?? true,
+    city: {
+      mutation: CITY_EVOLUTION.mutation ?? 0.12,
+      selection: (CITY_EVOLUTION.selection ?? 'tournament') satisfies Selection,
+    },
+    road: { mutation: DEFAULT_EVOLUTION.mutation, selection: DEFAULT_EVOLUTION.selection },
   };
+  /** Curriculum horizon handed back by the last turbo run (the next population starts there). */
+  private turboHorizon = 0;
   savedBrain: LoadedBrain | null = null;
   pretrained: LoadedBrain | null = null;
   /** In Simulate mode: follow the AI demo car instead of your car. */
@@ -182,7 +200,7 @@ export class App {
   private readonly bestPos: Vec2 = { x: 0, y: 0 };
   readonly nnPanel: NnPanel;
   private simKey = '';
-  private simRoute: { path: LanePath; from: number; to: number } | null = null;
+  private simRoute: RouteOverlay | null = null;
   private manualCrashAt = -1;
   private readonly noSensors: Sensor[] = [];
   private carBuf = new Float64Array(0);
@@ -192,6 +210,7 @@ export class App {
     { key: 'alive', label: 'Alive', smooth: false },
     { key: 'best', label: 'Best (m)' },
     { key: 'bestEver', label: 'Best ever (m)' },
+    { key: 'inlane', label: 'In lane', suffix: '%', smooth: false },
     { key: 'speed', label: 'Speed', suffix: ' km/h' },
     { key: 'traffic', label: 'Traffic', smooth: false },
     { key: 'parked', label: 'Parked', smooth: false },
@@ -236,6 +255,8 @@ export class App {
     history: GenerationRecord[];
     gps: number;
     stopping: boolean;
+    stage: number;
+    horizon: number;
   } | null = null;
   /** Best brain handed back by the last turbo run (seeds the next population). */
   turboBrain: LoadedBrain | null = null;
@@ -281,7 +302,7 @@ export class App {
         this.simGen++;
       },
       onMutation: (m) => {
-        this.evo.mutation = m;
+        this.evoKind.mutation = m;
         this.population?.setMutation(m);
       },
       onSpeed: (x) => {
@@ -289,7 +310,7 @@ export class App {
         this.nnPanel.setSpeed(x);
       },
       onSelection: (sel) => {
-        this.evo.selection = sel;
+        this.evoKind.selection = sel;
         this.population?.setSelection(sel);
       },
       onTurbo: (on) => (on ? this.startTurbo() : this.stopTurbo(true)),
@@ -301,6 +322,15 @@ export class App {
           on
             ? 'AI navigation: the network also sees its lane offset, heading error, two route waypoints and its speed'
             : 'AI navigation off: sensors only',
+        );
+      },
+      onCurriculum: (on) => {
+        this.evo.curriculum = on;
+        this.simGen++;
+        this.toast(
+          on
+            ? 'Curriculum on: training starts with the first straight and grows the route'
+            : 'Curriculum off: every generation drives the whole route',
         );
       },
       onSave: () => this.saveBestBrain(),
@@ -545,6 +575,7 @@ export class App {
     frame.focusSensor = this.focusSensorOf(focus);
     frame.extraSensors = this.layers.debugSensors ? this.liveSensors() : this.noSensors;
     frame.route = sim && !this.infinite ? this.simRoute : null;
+    if (frame.route) frame.route.laneFactor = this.laneStats()?.factor ?? Number.NaN;
     if (focus) this.viewport.follow(focus.lerpX(f.alpha), focus.lerpY(f.alpha), f.dtMs / 1000);
     if (this.mode !== 'edit') this.updatePanel(f, focus);
     this.clockMs = f.timeMs;
@@ -627,6 +658,9 @@ export class App {
     for (const k of ['gen', 'alive', 'best', 'bestEver']) this.hud.show(k, training);
     for (const k of ['speed', 'parked', 'arrivals']) this.hud.show(k, !training);
     this.hud.show('traffic', !this.infinite);
+    const lane = this.laneStats();
+    this.hud.show('inlane', lane !== null);
+    this.hud.set('inlane', lane ? lane.fraction * 100 : Number.NaN);
     if (pop) {
       this.hud.set('gen', pop.generation);
       this.hud.set('alive', pop.alive);
@@ -659,9 +693,38 @@ export class App {
     return this.evo.nav && this.mode === 'train' && !this.infinite;
   }
 
+  /** Mutation and selection settings of the current kind of world. */
+  private get evoKind(): { mutation: number; selection: Selection } {
+    return this.infinite ? this.evo.road : this.evo.city;
+  }
+
+  /**
+   * Sensors of the population being built: the city sensor when training in a city, the
+   * course homage sensor on the infinite road and for the Simulate-mode demo car.
+   */
+  private popSensor(): Partial<SensorConfig> {
+    return this.mode === 'train' && !this.infinite ? { ...DEFAULT_CITY_SENSOR } : {};
+  }
+
   /** Number of sensor rays population cars use in the current world. */
   private rayCount(): number {
-    return new Sensor().rayCount;
+    return new Sensor(this.popSensor()).rayCount;
+  }
+
+  /**
+   * Lane statistics of the focused AI car (in Simulate, the demo car unless another AI
+   * car is focused): in-lane fraction and current lane factor; null without a route.
+   */
+  private laneStats(): { fraction: number; factor: number } | null {
+    const pop = this.population;
+    if (!pop || this.infinite) return null;
+    const focus = this.focusCar();
+    const car = focus && focus.kind === 'ai' ? focus : pop.cars[0];
+    if (!car) return null;
+    const fraction = pop.inLaneFraction(car.tag);
+    const factor = pop.laneFactor(car.tag);
+    if (Number.isNaN(factor)) return null;
+    return { fraction: Number.isNaN(fraction) ? 1 : fraction, factor };
   }
 
   /** Input layouts brains may have in the current world (with and without route inputs). */
@@ -691,17 +754,29 @@ export class App {
     );
   }
 
-  private startSim(key: string): void {
-    const seed = this.seedBrain()?.net ?? null;
-    const evo = {
+  /** Evolution settings for a training population in the current world. */
+  private trainConfig(): Partial<EvolutionConfig> {
+    const base: Partial<EvolutionConfig> = {
       population: this.evo.cars,
-      mutation: this.evo.mutation,
-      selection: this.evo.selection,
+      mutation: this.evoKind.mutation,
+      selection: this.evoKind.selection,
       timeLimit: this.evo.timeLimit,
       stuckTimeout: this.evo.stuckTimeout,
       seed: 1 + this.simGen,
-      navInputs: this.navActive,
     };
+    if (this.infinite) return { ...base, navInputs: false };
+    return cityEvolution({
+      ...base,
+      navInputs: this.navActive,
+      curriculum: this.evo.curriculum,
+      startHorizon: this.turboHorizon,
+    });
+  }
+
+  private startSim(key: string): void {
+    const seed = this.seedBrain()?.net ?? null;
+    const evo = this.trainConfig();
+    this.turboHorizon = 0;
     this.renderer2d.skidDecal.clear();
     this.simRoute = null;
     this.focusAi = false;
@@ -749,7 +824,7 @@ export class App {
           sim.defaultSpawn(),
           { marking: target },
         );
-        if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd };
+        if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd, laneFactor: Number.NaN };
       }
       // ease the camera to the car instead of cutting (spec L3)
       const focus = sim.manual ?? pop.bestCar;
@@ -817,11 +892,15 @@ export class App {
     const pop = this.population;
     const aiFocus = focus && focus.kind === 'ai' && pop ? focus : (pop?.cars[0] ?? null);
     const brain = aiFocus && pop ? (pop.brains[aiFocus.tag] ?? null) : null;
+    const sensor = pop?.sensors[0];
     this.nnPanel.setNetwork(
       brain,
       pop ? pop.generation * 10_000 + (aiFocus?.tag ?? 0) : 0,
-      new Sensor().rayCount,
+      sensor?.rayCount ?? this.rayCount(),
+      pop?.config.navInputs ? NAV_INPUT_LABELS : NO_LABELS,
+      sensor?.config.spread ?? Math.PI / 2,
     );
+    this.nnPanel.setStage(this.stageText());
     this.nnPanel.update(
       f.timeMs,
       f.dtMs,
@@ -838,14 +917,27 @@ export class App {
     );
   }
 
+  /** Curriculum line for the training panel, e.g. "Stage 3 · route 15%". */
+  private stageText(): string {
+    const pop = this.population;
+    if (!pop || this.infinite || this.mode !== 'train') return '';
+    const t = this.turbo;
+    if (t && Number.isFinite(t.horizon) && Number.isFinite(pop.routeLength))
+      return `Stage ${t.stage} · route ${Math.round(Math.min(1, t.horizon / pop.routeLength) * 100)}%`;
+    if (!Number.isFinite(pop.routeLength)) return 'No target: coverage';
+    if (!pop.config.curriculum) return 'Whole route';
+    return `Stage ${pop.stage} · route ${Math.round(pop.routeShare * 100)}%`;
+  }
+
   private syncTrainingPanel(): void {
     this.nnPanel.syncControls(
       this.evo.cars,
-      this.evo.mutation,
-      this.evo.selection,
+      this.evoKind.mutation,
+      this.evoKind.selection,
       this.infinite?.curvy ?? false,
       this.turbo !== null,
       this.evo.nav,
+      this.evo.curriculum,
     );
     this.nnPanel.setSpeed(this.loop.speed);
     this.nnPanel.setBrainNote(this.brainNote());
@@ -857,10 +949,15 @@ export class App {
       return t.stopping
         ? 'Turbo: stopping, collecting the best brain…'
         : `Turbo: generation ${t.generation}, best ever ${(t.bestEver / 10).toFixed(0)} m, ${t.gps.toFixed(1)} generations/s. Untick Turbo to watch the result.`;
-    if (this.turboBrain) return 'Seeded from the best turbo brain (car 0 keeps it exactly).';
-    if (this.savedBrain) return 'Saved brain: seeds generation 0 (car 0 keeps it exactly).';
-    if (this.pretrained) return 'Using the bundled pre-trained brain as the seed.';
-    return 'No saved brain: generation 0 starts random.';
+    const seed = this.seedBrain();
+    if (seed && seed === this.turboBrain)
+      return 'Seeded from the best turbo brain (car 0 keeps it exactly).';
+    if (seed && seed === this.savedBrain)
+      return 'Saved brain: seeds generation 0 (car 0 keeps it exactly).';
+    if (seed && seed === this.pretrained) return 'Using the bundled pre-trained brain as the seed.';
+    return this.savedBrain
+      ? 'The saved brain does not fit these inputs: generation 0 starts random.'
+      : 'No saved brain: generation 0 starts random.';
   }
 
   /**
@@ -882,7 +979,16 @@ export class App {
     const worker = new Worker(new URL('../workers/trainer.worker.ts', import.meta.url), {
       type: 'module',
     });
-    this.turbo = { worker, generation: 0, bestEver: 0, history: [], gps: 0, stopping: false };
+    this.turbo = {
+      worker,
+      generation: 0,
+      bestEver: 0,
+      history: [],
+      gps: 0,
+      stopping: false,
+      stage: this.population?.stage ?? 1,
+      horizon: this.population?.horizon ?? Infinity,
+    };
     worker.onmessage = (e: MessageEvent<TrainerResponse>) => this.onTurboMessage(e.data);
     worker.onerror = (e) => {
       this.toast('Turbo training failed', { kind: 'error', details: [e.message] });
@@ -894,20 +1000,18 @@ export class App {
       worldText: this.infinite ? null : JSON.stringify(serializeWorld(this.model)),
       curvy: this.infinite?.curvy ?? false,
       evo: {
-        population: this.evo.cars,
-        mutation: this.evo.mutation,
-        selection: this.evo.selection,
-        timeLimit: this.evo.timeLimit,
-        stuckTimeout: this.evo.stuckTimeout,
-        seed: 1 + this.simGen,
-        navInputs: this.navActive,
+        ...this.trainConfig(),
+        // continue the curriculum where the visible population is
+        startHorizon: Number.isFinite(this.population?.horizon ?? Infinity)
+          ? (this.population?.horizon ?? 0)
+          : 0,
       },
       seedBrain: seedBrain
         ? serializeBrain(seedBrain.net, seedBrain.inputs, {
             generations: this.population?.generation ?? 0,
             bestFitness: this.population?.bestEverFitness ?? 0,
             world: 'seed',
-            mutation: this.evo.mutation,
+            mutation: this.evoKind.mutation,
             date: new Date().toISOString(),
           })
         : null,
@@ -941,6 +1045,8 @@ export class App {
     if (m.type === 'progress') {
       t.generation = m.generation;
       t.bestEver = m.bestEver;
+      t.stage = m.stage;
+      t.horizon = m.horizon;
       t.gps = m.generation / Math.max(0.001, m.elapsedMs / 1000);
       t.history.push({
         generation: m.generation - 1,
@@ -956,6 +1062,7 @@ export class App {
       const res = parseBrain(m.brain);
       if (res.ok) {
         this.turboBrain = { net: res.net, inputs: res.file.inputs };
+        this.turboHorizon = Number.isFinite(m.horizon) ? m.horizon : 0;
         this.simGen++; // restart the visible population from the turbo brain
       }
       this.loop.paused = false;
@@ -1031,7 +1138,7 @@ export class App {
       generations: pop.generation,
       bestFitness: Math.round(pop.bestEverFitness),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
-      mutation: this.evo.mutation,
+      mutation: this.evoKind.mutation,
       date: new Date().toISOString(),
     });
     try {
@@ -1089,7 +1196,7 @@ export class App {
       generations: pop?.generation ?? 0,
       bestFitness: Math.round(pop?.bestEverFitness ?? 0),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
-      mutation: this.evo.mutation,
+      mutation: this.evoKind.mutation,
       date: new Date().toISOString(),
     });
     const blob = new Blob([JSON.stringify(file, null, 1)], { type: 'application/json' });
@@ -2006,7 +2113,9 @@ export class App {
           this.nnPanel.setSpeed(this.loop.speed);
         },
         setTraining: (cfg: Partial<{ cars: number; mutation: number; timeLimit: number }>) => {
-          Object.assign(this.evo, cfg);
+          if (cfg.cars !== undefined) this.evo.cars = cfg.cars;
+          if (cfg.timeLimit !== undefined) this.evo.timeLimit = cfg.timeLimit;
+          if (cfg.mutation !== undefined) this.evoKind.mutation = cfg.mutation;
           this.simGen++;
         },
         enterInfinite: (curvy: boolean) => this.enterInfinite(curvy),

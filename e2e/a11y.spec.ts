@@ -162,8 +162,15 @@ test('training controls show only in Train mode', async ({ page }) => {
   await expect(page.locator('.train-controls')).toBeHidden();
   await page.evaluate(() => window.__ND__.actions.setMode('train'));
   await expect(page.locator('.train-controls')).toBeVisible();
-  // city training offers AI navigation; the curvy toggle belongs to the infinite road
-  await expect(page.getByText('Route inputs (AI navigation)')).toBeVisible();
+  // city training offers AI navigation (relabelled in v1.1, DECISIONS #100) and the
+  // curriculum, both on by default; the curvy toggle belongs to the infinite road
+  await expect(page.getByText('Route inputs (lane + waypoints)')).toBeVisible();
+  await expect(
+    page.getByRole('checkbox', { name: /Route inputs \(lane \+ waypoints\)/ }),
+  ).toBeChecked();
+  await expect(page.getByText('Curriculum', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /^Curriculum/ })).toBeChecked();
+  await expect(page.locator('.stage-note')).toContainText('Stage 1');
   await expect(page.getByText('Curvy road')).toBeHidden();
 });
 

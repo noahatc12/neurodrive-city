@@ -42,6 +42,9 @@ export type TrainerResponse =
       best: number;
       average: number;
       bestEver: number;
+      /** Curriculum stage and horizon (units; Infinity without a route). */
+      stage: number;
+      horizon: number;
       steps: number;
       elapsedMs: number;
     }
@@ -51,6 +54,8 @@ export type TrainerResponse =
       generation: number;
       bestEver: number;
       history: GenerationRecord[];
+      /** Curriculum horizon reached (the visible population continues from it). */
+      horizon: number;
       steps: number;
       elapsedMs: number;
     }

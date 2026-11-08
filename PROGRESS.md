@@ -18,11 +18,11 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 9     | Stretch, accessibility, UX polish                                  | done        |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | done        |
 | 11a   | Follow-up 1 A: lane observation inputs, lane-discipline fitness    | done        |
-| 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | in progress |
-| 11c   | Follow-up 1 C: headless city training, shipped city brain          | todo        |
+| 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | done        |
+| 11c   | Follow-up 1 C: headless city training, shipped city brain          | in progress |
 | 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | todo        |
 
-**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase B.
+**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase C.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -445,6 +445,38 @@ final Definition of Done audit. Tag `v1.0.0`.
   across the centre line with the dashed route preview on the right-hand lane.
   `phase-11a-train-2d.png`: generation 13 of the course-homage population at ×8, the leader on the
   route preview, the network panel with the 5-input brain and the old "Route inputs" toggle.
+
+### Follow-up 1, phase B (2026-11-08): city training defaults, curriculum, jitter, panel and HUD
+
+- `npm run verify`: typecheck 0, lint 0, 31 test files / 265 tests, build OK, e2e 24 passed (4.7 min).
+- Build: initial chunk 257.56 kB (gzip 83.44 kB). `npm run test:coverage`: engine lines 98.03%.
+- Delivered: `DEFAULT_CITY_SENSOR` (7 rays, 5π/6, 200); `CITY_EVOLUTION` / `cityEvolution()` (route
+  inputs, tanh, [12, 8, 4], tournament k = 5 with crossover, mutation 0.12, three elites, curriculum,
+  spawn jitter ±0.08 road widths and ±4°), applied by the app and the turbo worker in city worlds only;
+  the curriculum (320 units, +260 when 10% of the cars or the best car twice in a row reach the
+  horizon; the horizon carries through turbo); generation records carry `reached`, `stage` and
+  `horizon`; the training panel's "Route inputs (lane + waypoints)" and "Curriculum" toggles (both on)
+  with "Stage k · route x%"; the HUD's "In lane" row; the route preview tinted green, amber or red by
+  the focused AI car's lane factor; network-panel labels `lat, hdg, wp near, wp far, speed` after ray
+  glyphs fanned over the real spread; mutation and selection kept per kind of world.
+- Tests added (`tests/engine/ai/curriculum.test.ts`, 8): the horizon starts at 320, grows by 260 when
+  ≥ 10% reach it and stops at the route length; fewer than 10% do not grow it unless the best car
+  reaches it twice in a row; the arrival bonus and the freeze use the current horizon; curriculum off
+  evaluates the whole route; a start horizon is honoured; elite 3 keeps the best ever and the next
+  two brains unmutated while the rest are bred; spawn jitter stays within ±0.08 w and ±4°, is seeded
+  and redrawn every generation; the city defaults give topology [12, 8, 4] with the city sensor.
+- Gate reliability: with one more test file the 300-car step benchmark failed about 1 run in 3 (4.5 to
+  5.4 ms against 4 ms; 1.2 to 2.7 ms alone) and the coverage run's 200-segment world budget failed every
+  time. Both wall-clock tests moved unchanged into `performance.test.ts` files that run alone after the
+  other files (DECISIONS #98): 10 consecutive full runs and 2 coverage runs green afterwards.
+- e2e `a11y.spec.ts` follows the toggle's new label and also checks both toggles default on and the
+  stage line (DECISIONS #100).
+- Screenshot `phase-11b-train-2d.png`: Train mode in Grid Town at ×8, generation 11 of 50 cars: HUD with
+  "In lane 100%", the best car at the first corner with seven rays fanned over 150°, the route preview
+  tinted amber (the best car is partly out of its lane in the turn), the network panel with 12 inputs
+  (seven ray glyphs, then the staggered route-input labels) and the training controls with "Route
+  inputs (lane + waypoints)" and "Curriculum" ticked and "Stage 2 · route 10%".
+  `phase-11b-sim-2d.png`: Simulate mode as in 11a (the demo car changes in phase D).
 
 ## Known issues
 

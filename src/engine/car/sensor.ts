@@ -34,6 +34,17 @@ export const DEFAULT_SENSOR: Readonly<SensorConfig> = Object.freeze({
   length: 150,
 });
 
+/**
+ * Sensors of AI cars in city worlds: 7 rays over 150° reaching 200 units, so a car sees
+ * the kerb beside it and cross traffic at junctions (the infinite road keeps the course
+ * homage {@link DEFAULT_SENSOR}).
+ */
+export const DEFAULT_CITY_SENSOR: Readonly<SensorConfig> = Object.freeze({
+  rayCount: 7,
+  spread: (Math.PI * 5) / 6,
+  length: 200,
+});
+
 export class Sensor {
   readonly config: SensorConfig;
   /** Network inputs: 1 − offset per ray (0 when nothing is hit). */
