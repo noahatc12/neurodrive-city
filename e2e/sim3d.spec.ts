@@ -8,7 +8,7 @@ const r3 = (page: Page): Promise<Window['__ND__']['render3d']> =>
 test('3D view: lazy load, instanced city, camera modes, picking, draw calls, memory', async ({
   page,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000); // software WebGL in headless Chromium renders a few frames a second
   await page.goto('./');
   await waitForApp(page);
   await page.evaluate(() => window.__ND__.actions.loadDemo(20251107));
@@ -25,6 +25,16 @@ test('3D view: lazy load, instanced city, camera modes, picking, draw calls, mem
   await expect(page.locator('.stage-3d')).toHaveCSS('opacity', '1');
   await expect(page.locator('.stage-2d')).toHaveCSS('opacity', '0');
   await expect(page.locator('.camera-chips')).toBeVisible();
+  await expect(page.locator('.view-settings')).toBeVisible();
+  // fixed settings for comparable screenshots (software rendering would auto-downgrade)
+  await page.evaluate(() => {
+    window.__ND__.actions.setQuality('high', false);
+    window.__ND__.actions.setTimeOfDay(0.42);
+  });
+  await expect(page.locator('.view-settings [data-quality="high"]')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
 
   // Simulate mode puts traffic and the manual car into the 3D city
   await page.evaluate(() => window.__ND__.actions.setMode('simulate'));
@@ -83,11 +93,20 @@ test('3D view: lazy load, instanced city, camera modes, picking, draw calls, mem
   });
   await page.waitForTimeout(1500);
   await shot(page, 'sim-3d-day');
+  const day = await r3(page);
+  expect(day.bloom).toBe(true);
+  expect(day.shadows).toBe(true);
+  expect(day.markings ?? 0).toBeGreaterThan(5);
 
   // GPU memory returns to its baseline after 3 rebuilds of the world scene. Measured with
   // the simulation stopped and a still camera so frustum culling cannot change which
   // meshes have been uploaded between samples.
-  await page.evaluate(() => window.__ND__.actions.setMode('edit'));
+  // (Low preset: no bloom or shadows, so software rendering keeps up; the geometry and
+  // texture counts do not depend on the preset)
+  await page.evaluate(() => {
+    window.__ND__.actions.setMode('edit');
+    window.__ND__.actions.setQuality('low', false);
+  });
   await page.waitForTimeout(1500);
   const rebuild = async (): Promise<void> => {
     const builds = (await r3(page)).builds ?? 0;
@@ -115,6 +134,57 @@ test('3D view: lazy load, instanced city, camera modes, picking, draw calls, mem
   await page.waitForTimeout(400);
   await page.locator('.stage').click({ position: { x: 700, y: 450 } });
   await expect.poll(() => nd(page, () => window.__ND__.world.graph.pointCount)).toBe(n0 + 1);
+});
+
+test('3D night: bloom on rays, lamps and windows; slow frames lower the quality', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.goto('./');
+  await waitForApp(page);
+  await page.evaluate(() => window.__ND__.actions.loadDemo(20251107));
+  await waitForGeometry(page);
+  await page.evaluate(() => window.__ND__.actions.setRenderView('3d'));
+  await expect.poll(async () => (await r3(page)).ready, { timeout: 30_000 }).toBe(true);
+  await page.evaluate(() => {
+    window.__ND__.actions.setQuality('high', false);
+    window.__ND__.actions.setTimeOfDay(0.42);
+    window.__ND__.actions.setMode('simulate');
+  });
+  await expect
+    .poll(async () => (await nd(page, () => window.__ND__.sim))?.stepCount ?? 0)
+    .toBeGreaterThan(30);
+
+  // L tweens the time of day; the AI demo car's rays, lamps, beacons and lit
+  // windows bloom
+  await page.keyboard.press('f'); // follow the AI demo car (it has sensors)
+  await page.keyboard.press('l');
+  await expect
+    .poll(async () => (await r3(page)).night ?? 0, { timeout: 15_000 })
+    .toBeGreaterThan(0.95);
+  await page.evaluate(() => {
+    const f = window.__ND__.focusCar;
+    window.__ND__.actions.frame3d(f?.x ?? 0, f?.y ?? 0, 520);
+  });
+  await page.waitForTimeout(1500);
+  const night = await r3(page);
+  expect(night.rays ?? 0).toBeGreaterThan(0);
+  expect(await nd(page, () => window.__ND__.stats.drawCalls)).toBeLessThanOrEqual(150);
+  console.info(
+    `3D draw calls at night with bloom: ${await nd(page, () => window.__ND__.stats.drawCalls)}`,
+  );
+  expect(await canvasVariance(page, '.stage-3d')).toBeGreaterThan(20);
+  await shot(page, 'sim-3d-night');
+
+  // auto quality: software rendering is slower than 20 ms per frame, so after 3 s of slow
+  // frames the preset steps down and a toast explains why
+  await page.evaluate(() => window.__ND__.actions.setQuality('high', true));
+  await expect.poll(async () => (await r3(page)).quality, { timeout: 20_000 }).toBe('medium');
+  await expect(page.locator('.toast')).toContainText(['3D quality was lowered to medium']);
+  await page.evaluate(() => {
+    window.__ND__.actions.setQuality('high', false);
+    window.__ND__.actions.setTimeOfDay(0.42);
+  });
 });
 
 test('3D view: without WebGL the app toasts and stays in 2D', async ({ page }) => {

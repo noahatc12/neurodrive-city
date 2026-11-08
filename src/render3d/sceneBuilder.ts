@@ -16,12 +16,14 @@ import { buildBuildingMeshes, type BuildingMeshes } from './buildingsMesh.ts';
 import { buildRoadMeshes, Y_MARK, Y_ROAD, type RoadMeshes } from './roadsMesh.ts';
 import { asphaltTexture, groundTexture } from './textures.ts';
 import { buildTreeMeshes, type TreeMeshes } from './treesMesh.ts';
+import { buildStreetLights, type StreetLights } from './streetLights.ts';
 
 export interface WorldMeshes {
   readonly group: THREE.Group;
   readonly roads: RoadMeshes;
   readonly buildings: BuildingMeshes;
   readonly trees: TreeMeshes;
+  readonly streetLights: StreetLights;
   /** Geometry version and road width the scene was built for. */
   readonly version: number;
   readonly roadWidth: number;
@@ -43,7 +45,8 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
   const roads = buildRoadMeshes(geo, roadWidth);
   const buildings = buildBuildingMeshes(geo);
   const trees = buildTreeMeshes(geo);
-  group.add(roads.group, buildings.group, trees.group);
+  const streetLights = buildStreetLights(geo, roadWidth);
+  group.add(roads.group, buildings.group, trees.group, streetLights.group);
   const b = geo.data.bounds;
   const finite = Number.isFinite(b.minX) && b.maxX > b.minX;
   const cx = finite ? (b.minX + b.maxX) / 2 : 0;
@@ -55,6 +58,7 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
     roads,
     buildings,
     trees,
+    streetLights,
     version: geo.version,
     roadWidth,
     buildMs: performance.now() - t0,
@@ -77,6 +81,7 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
       roads.dispose();
       buildings.dispose();
       trees.dispose();
+      streetLights.dispose();
     },
   };
 }

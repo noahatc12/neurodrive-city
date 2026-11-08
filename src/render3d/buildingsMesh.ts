@@ -103,7 +103,7 @@ export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
     map,
     emissiveMap: emissive,
     emissive: new THREE.Color('#ffcf8a'),
-    emissiveIntensity: 1,
+    emissiveIntensity: 1.35,
     roughness: 0.85,
     metalness: 0.05,
   });
@@ -134,7 +134,7 @@ export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
         uniform float uNight;
         varying float vLit;
         varying float vRoof;
-        float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7)) + vLit * 91.7) * 43758.5453); }`,
+        float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }`,
       )
       .replace(
         '#include <map_fragment>',
@@ -144,8 +144,10 @@ export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
       .replace(
         '#include <emissivemap_fragment>',
         `vec4 emissiveColor = texture2D(emissiveMap, vEmissiveMapUv);
-        vec2 cell = floor(vEmissiveMapUv * 4.0);
-        float lit = step(0.55, hash21(cell));
+        // one random draw per window (sine-free hash: stable on software GPUs)
+        vec2 cell = floor(vEmissiveMapUv * 4.0) + vec2(vLit * 517.0, vLit * 131.0);
+        float h = hash21(cell);
+        float lit = step(0.64, h) * (0.55 + 0.45 * fract(h * 7.31));
         totalEmissiveRadiance *= emissiveColor.rgb * lit * uNight * (1.0 - vRoof);`,
       );
   };

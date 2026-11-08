@@ -14,13 +14,12 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 5     | Cars, sensors, damage, traffic, navigation                         | done        |
 | 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | done        |
 | 7     | 3D renderer foundation                                             | done        |
-| 8     | 3D polish, pre-trained brain, turbo worker                         | pending     |
+| 8     | 3D polish, pre-trained brain, turbo worker                         | done        |
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 8, 3D polish (sensor rays, 3D markings, day/night with sky and headlights, bloom and
-quality presets with auto-downgrade, 3D particles and skid trail, settings panel, turbo trainer worker,
-pre-trained brain).
+**Next:** Phase 9, stretch and polish (AI navigation mode F5, OSM buildings and water J6,
+onboarding tour, accessibility, responsive layout, split `trainingPanel.ts`).
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -271,8 +270,49 @@ final Definition of Done audit. Tag `v1.0.0`.
 - Other e2e numbers this run: 2D Simulate frame 17.7 ms, 2D Train with 300 AI cars 36.6 ms
   (software rendering), drag in a 325-segment world 17.6 ms average.
 
+### Phase 8 (2026-11-07)
+
+- `npm run verify`: typecheck 0, lint 0, 26 test files / 236 tests, build OK, e2e 16 passed.
+- Build: initial chunk 238.59 kB (gzip 77.31 kB); lazy 3D chunk 674.44 kB (gzip 172.20 kB).
+- 3D in headless Chromium (SwiftShader): 77 draw calls by day with shadows and bloom (High),
+  65 at night; `renderer.info.memory` 32 geometries / 18 textures after 1 and 4 rebuilds; demo
+  city scene build 38 ms. Draw calls now show in the HUD ("Draw calls").
+- New: sensor rays as one additive `LineSegments` (cyan to magenta by hit distance) with glowing
+  hit sprites; exhaust, smoke and spark point clouds; skid-mark ring-buffer mesh faded in the
+  shader; instanced headlight cones plus a real spot light on the focused car; 3D markings (signs
+  with Canvas-text faces, zebra stripes, parking bays, light poles with three emissive lamps, start
+  arch, target beam with rotating ring); street lights; shader sky with sun glow and stars;
+  day/night driven by one time-of-day value (slider, auto cycle, L toggles with an 1.8 s tween);
+  bloom composer (RenderPass, UnrealBloomPass, OutputPass with ACES); Low/Medium/High presets
+  with an auto-downgrade governor; the 3D settings panel; cinematic camera.
+- Unit tests: camera blends are continuous and eased (sampled at 60 Hz, the largest step stays
+  under 4x the average; first frame under 20% of a mid-blend frame), chase damping agrees at 30,
+  60 and 120 Hz within 12 units, FOV kick 55 to over 62 degrees at full speed (none with reduced
+  motion), reduced motion shortens blends to a third, cinematic glides between cars. Quality
+  governor: downgrade after 3 s over 20 ms, never for fast frames, short hitches or when off.
+- Pre-trained brain (`npm run train`, seeded, reproduces byte for byte, about 60 s): 400 cars,
+  tournament selection, 120 generations; elites validated alone every 10 generations; shipped
+  the generation-10 elite: best fitness 10 591 units, validation 1059 m in 60 s, 11 overtakes, no
+  damage. Test `ai/pre-trained brain`: drives 60 s on its seeded training road without damage,
+  more than 300 m, more than 3 overtakes. A first configuration (course selection, 200 cars)
+  produced a brain that tailed traffic with zero overtakes; the validation step caught it.
+- Turbo training (G8): e2e `training.spec.ts` ticks Turbo on the infinite road; the worker
+  reached generation 9 within about 2 s (best 262 m in 15 s generations); unticking hands back
+  the best brain, the visible population restarts from it and a toast reports the run.
+- Screenshots: `phase-8-sim-3d-day.png` (aerial demo city by day, as in Phase 7, now with the
+  3D markings, the start arch, street-light posts and the settings panel above the camera chips);
+  `phase-8-sim-3d-night.png` (22:19: the AI demo car with bloomed cyan rays and white hit sprites,
+  its headlight cone, warm street-light pools along the road, about a third of the windows lit and
+  glowing, the checkered start arch, the HUD showing 65 draw calls).
+- Visual review fixes: nearly every window was lit and some speckled (sine hash on SwiftShader;
+  replaced with a sine-free hash); glow toned down; night lacked light sources at street level
+  (street lights added).
+
 ## Known issues
 
 - Training controls live inside `ui/panels/nnPanel.ts`; the spec's file list names a separate
-  `trainingPanel.ts` (to be split out during Phase 9 polish). `settingsPanel.ts` arrives with the
-  3D quality and time-of-day settings in Phase 8.
+  `trainingPanel.ts` (to be split out during Phase 9 polish).
+- The bundled brain is a highway weaver (rays only); in city worlds the Simulate demo car still
+  crashes at corners. City navigation is the F5 stretch (Phase 9).
+- A few windows still show a fine speckle in software rendering (SwiftShader texture filtering of
+  the emissive mask); not seen in the hardware renderer.

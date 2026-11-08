@@ -85,3 +85,41 @@ test('infinite road: training runs on the endless 3-lane road', async ({ page })
   await page.keyboard.press('Tab');
   await expect.poll(() => nd(page, () => window.__ND__.mode)).toBe('edit');
 });
+
+test('turbo training: a worker streams generations and hands back the best brain', async ({
+  page,
+}) => {
+  await page.goto('./');
+  await waitForApp(page);
+  await expect
+    .poll(() => nd(page, () => (window.__ND__ as unknown as { pretrained: boolean }).pretrained))
+    .toBe(true);
+  await page.evaluate(() => {
+    const a = window.__ND__.actions as unknown as {
+      setTraining(c: { cars: number; timeLimit: number }): void;
+    };
+    a.setTraining({ cars: 60, timeLimit: 15 });
+  });
+  await page.getByRole('button', { name: 'World menu' }).click();
+  await page.getByRole('menuitem', { name: 'Infinite road' }).click();
+  await expect.poll(async () => (await training(page))?.infinite ?? false).toBe(true);
+  type Turbo = { running: boolean; generation?: number; bestEver?: number; adopted?: boolean };
+  const turbo = (): Promise<Turbo> =>
+    page.evaluate(() => (window.__ND__ as unknown as { turbo: Turbo }).turbo);
+  await page.getByText('Turbo (worker)').click();
+  await expect.poll(async () => (await turbo()).running).toBe(true);
+  await expect
+    .poll(async () => (await turbo()).generation ?? 0, { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(3);
+  const during = await turbo();
+  console.info(
+    `turbo: generation ${during.generation}, best ever ${((during.bestEver ?? 0) / 10).toFixed(0)} m`,
+  );
+  await expect(page.locator('.brain-note')).toContainText('Turbo');
+  await page.getByText('Turbo (worker)').click();
+  await expect.poll(async () => (await turbo()).running, { timeout: 15_000 }).toBe(false);
+  expect((await turbo()).adopted).toBe(true);
+  await expect(page.locator('.toast-success')).toContainText('Turbo:');
+  // the visible population restarted from the turbo brain
+  await expect.poll(async () => (await training(page))?.total ?? 0).toBe(60);
+});

@@ -43,7 +43,13 @@ import type { SimHost } from '../engine/sim/host.ts';
 import type { Car } from '../engine/car/car.ts';
 import { Sensor } from '../engine/car/sensor.ts';
 import type { ThreeRenderer } from '../render3d/threeRenderer.ts';
+import type { TrainerRequest, TrainerResponse } from '../workers/protocol.ts';
 import { CameraChips, nextCameraMode } from '../ui/cameraChips.ts';
+import {
+  SettingsPanel,
+  type QualityLevel,
+  type ViewSettingsState,
+} from '../ui/panels/settingsPanel.ts';
 
 const BRAIN_KEY = 'nd:brain';
 import { h } from '../ui/dom.ts';
@@ -169,6 +175,7 @@ export class App {
     { key: 'crashes', label: 'Collisions', smooth: false },
     { key: 'fps', label: 'FPS' },
     { key: 'simms', label: 'Sim ms', decimals: 2 },
+    { key: 'draws', label: 'Draw calls', smooth: false },
   ]);
   private readonly fileInput: HTMLInputElement;
   private autosaveTimer = 0;
@@ -185,10 +192,29 @@ export class App {
   private clockMs = 0;
   cameraMode: CameraMode = 'orbit';
   private readonly cameraChips: CameraChips;
+  private readonly viewSettings: SettingsPanel;
+  /** 3D quality and time-of-day preferences (persisted). */
+  private readonly view3d: ViewSettingsState = {
+    quality: getPref<QualityLevel>('quality', 'medium'),
+    autoQuality: getPref('autoQuality', true),
+    time: getPref('timeOfDay', 0.42),
+    cycle: getPref('dayCycle', false),
+  };
   private readonly pickTip: HTMLElement;
   /** Car chosen by clicking it in 3D (camera, sensors and network panel follow it). */
   private pickedCarId: number | null = null;
   private pickDown: { x: number; y: number } | null = null;
+  /** Turbo training in a worker (spec G8): null when off. */
+  private turbo: {
+    worker: Worker;
+    generation: number;
+    bestEver: number;
+    history: GenerationRecord[];
+    gps: number;
+    stopping: boolean;
+  } | null = null;
+  /** Best brain handed back by the last turbo run (seeds the next population). */
+  turboBrain: NeuralNetwork | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -242,7 +268,7 @@ export class App {
         this.evo.selection = sel;
         this.population?.setSelection(sel);
       },
-      onTurbo: () => this.toast('Turbo training arrives with the worker build'),
+      onTurbo: (on) => (on ? this.startTurbo() : this.stopTurbo(true)),
       onCurvy: (on) => this.enterInfinite(on),
       onSave: () => this.saveBestBrain(),
       onDiscard: () => this.discardBrain(),
@@ -257,7 +283,7 @@ export class App {
       onImport: (f) => void this.importBrain(f),
       onCollapse: () => {},
     });
-    this.nnPanel.setTurboAvailable(false);
+    this.nnPanel.setTurboAvailable(true);
     this.worldPanel = new WorldPanel(
       {
         onSettings: (p) => this.applySettings(p),
@@ -275,6 +301,30 @@ export class App {
     this.help = new HelpOverlay();
     this.cameraChips = new CameraChips((m) => this.setCameraMode(m));
     this.cameraChips.set(this.cameraMode);
+    this.viewSettings = new SettingsPanel({
+      onQuality: (q) => {
+        this.view3d.quality = q;
+        setPref('quality', q);
+        this.renderer3d?.setQuality(q);
+        this.viewSettings.set(this.view3d);
+      },
+      onAutoQuality: (on) => {
+        this.view3d.autoQuality = on;
+        setPref('autoQuality', on);
+        if (this.renderer3d) this.renderer3d.governor.enabled = on;
+      },
+      onTime: (t) => {
+        this.view3d.time = t;
+        setPref('timeOfDay', t);
+        this.renderer3d?.setTimeOfDay(t);
+      },
+      onCycle: (on) => {
+        this.view3d.cycle = on;
+        setPref('dayCycle', on);
+        if (this.renderer3d) this.renderer3d.autoCycle = on;
+      },
+    });
+    this.viewSettings.set(this.view3d);
     this.pickTip = h('div', { class: 'pick-tip glass', role: 'tooltip' });
     this.pickTip.hidden = true;
     this.fileInput = h('input', {
@@ -299,6 +349,7 @@ export class App {
         this.statusbar.el,
         this.toaster.el,
         this.minimap.el,
+        this.viewSettings.el,
         this.cameraChips.el,
         this.pickTip,
         this.hud.el,
@@ -374,6 +425,7 @@ export class App {
     this.resize();
     this.store = await openWorldStore();
     this.loadSavedBrain();
+    void this.loadPretrained();
     const lastId = getLastWorldId();
     let loaded = false;
     if (lastId) {
@@ -456,6 +508,7 @@ export class App {
   }
 
   private updateStatus(): void {
+    if (this.view === '3d' && this.renderer3d) this.viewSettings.setTime(this.renderer3d.timeOfDay);
     const w = this.editor.state.mouseWorld;
     this.statusbar.update({
       canUndo: this.history.canUndo,
@@ -539,12 +592,14 @@ export class App {
     }
     this.hud.set('fps', this.stats.fps);
     this.hud.set('simms', this.stats.avgSimMs);
+    this.hud.set('draws', this.stats.drawCalls);
     this.hud.update(dtMs, this.reducedMotion);
   }
 
   /** The brain used to seed a population: saved brain, else the bundled pre-trained one. */
   private seedBrain(): NeuralNetwork | null {
     const inputs = new Sensor().rayCount;
+    if (this.turboBrain && brainFits(this.turboBrain, inputs)) return this.turboBrain;
     if (this.savedBrain && brainFits(this.savedBrain, inputs)) return this.savedBrain;
     if (this.pretrained && brainFits(this.pretrained, inputs)) return this.pretrained;
     return null;
@@ -623,6 +678,7 @@ export class App {
   }
 
   private stopSim(): void {
+    this.stopTurbo(false);
     this.sim = null;
     this.population = null;
     this.simKey = '';
@@ -689,7 +745,7 @@ export class App {
         alive: pop?.alive ?? 0,
         total: pop?.cars.length ?? 0,
       },
-      pop?.history ?? this.emptyHistory,
+      this.turbo ? this.turbo.history : (pop?.history ?? this.emptyHistory),
       this.reducedMotion,
     );
   }
@@ -700,16 +756,126 @@ export class App {
       this.evo.mutation,
       this.evo.selection,
       this.infinite?.curvy ?? false,
-      false,
+      this.turbo !== null,
     );
     this.nnPanel.setSpeed(this.loop.speed);
     this.nnPanel.setBrainNote(this.brainNote());
   }
 
   private brainNote(): string {
+    const t = this.turbo;
+    if (t)
+      return t.stopping
+        ? 'Turbo: stopping, collecting the best brain…'
+        : `Turbo: generation ${t.generation}, best ever ${(t.bestEver / 10).toFixed(0)} m, ${t.gps.toFixed(1)} generations/s. Untick Turbo to watch the result.`;
+    if (this.turboBrain) return 'Seeded from the best turbo brain (car 0 keeps it exactly).';
     if (this.savedBrain) return 'Saved brain: seeds generation 0 (car 0 keeps it exactly).';
     if (this.pretrained) return 'Using the bundled pre-trained brain as the seed.';
     return 'No saved brain: generation 0 starts random.';
+  }
+
+  /**
+   * Turbo training (spec G8): evolution runs headless in a worker as fast as the CPU
+   * allows while the visible simulation pauses; unticking Turbo hands the best brain back
+   * and the visible population continues from it.
+   */
+  startTurbo(): boolean {
+    if (this.turbo) return true;
+    if (this.mode !== 'train' && !this.infinite) {
+      this.toast('Turbo training runs in Train mode');
+      this.syncTrainingPanel();
+      return false;
+    }
+    const seedNet = this.population?.bestEver ?? this.seedBrain();
+    const worker = new Worker(new URL('../workers/trainer.worker.ts', import.meta.url), {
+      type: 'module',
+    });
+    this.turbo = { worker, generation: 0, bestEver: 0, history: [], gps: 0, stopping: false };
+    worker.onmessage = (e: MessageEvent<TrainerResponse>) => this.onTurboMessage(e.data);
+    worker.onerror = (e) => {
+      this.toast('Turbo training failed', { kind: 'error', details: [e.message] });
+      this.stopTurbo(false);
+    };
+    const msg: TrainerRequest = {
+      type: 'start',
+      host: this.infinite ? 'infinite' : 'city',
+      worldText: this.infinite ? null : JSON.stringify(serializeWorld(this.model)),
+      curvy: this.infinite?.curvy ?? false,
+      evo: {
+        population: this.evo.cars,
+        mutation: this.evo.mutation,
+        selection: this.evo.selection,
+        timeLimit: this.evo.timeLimit,
+        stuckTimeout: this.evo.stuckTimeout,
+        seed: 1 + this.simGen,
+      },
+      seedBrain: seedNet
+        ? serializeBrain(seedNet, inputNames(new Sensor().rayCount), {
+            generations: this.population?.generation ?? 0,
+            bestFitness: this.population?.bestEverFitness ?? 0,
+            world: 'seed',
+            mutation: this.evo.mutation,
+            date: new Date().toISOString(),
+          })
+        : null,
+    };
+    worker.postMessage(msg);
+    this.loop.paused = true;
+    this.toast('Turbo training started in a worker');
+    this.syncTrainingPanel();
+    return true;
+  }
+
+  /** Stops turbo training; with `adopt`, waits for the best brain and continues from it. */
+  stopTurbo(adopt: boolean): void {
+    const t = this.turbo;
+    if (!t) return;
+    if (!adopt) {
+      t.worker.terminate();
+      this.turbo = null;
+      this.syncTrainingPanel();
+      return;
+    }
+    if (t.stopping) return;
+    t.stopping = true;
+    t.worker.postMessage({ type: 'stop' } satisfies TrainerRequest);
+    this.syncTrainingPanel();
+  }
+
+  private onTurboMessage(m: TrainerResponse): void {
+    const t = this.turbo;
+    if (!t) return;
+    if (m.type === 'progress') {
+      t.generation = m.generation;
+      t.bestEver = m.bestEver;
+      t.gps = m.generation / Math.max(0.001, m.elapsedMs / 1000);
+      t.history.push({
+        generation: m.generation - 1,
+        best: m.best,
+        average: m.average,
+        duration: 0,
+      });
+      if (t.history.length > 200) t.history.shift();
+      this.nnPanel.setBrainNote(this.brainNote());
+    } else if (m.type === 'done') {
+      t.worker.terminate();
+      this.turbo = null;
+      const res = parseBrain(m.brain);
+      if (res.ok) {
+        this.turboBrain = res.net;
+        this.simGen++; // restart the visible population from the turbo brain
+      }
+      this.loop.paused = false;
+      this.toast(
+        `Turbo: ${m.generation} generations in ${(m.elapsedMs / 1000).toFixed(1)} s, best ${(m.bestEver / 10).toFixed(0)} m. Continuing from the best brain.`,
+        { kind: 'success' },
+      );
+      this.syncTrainingPanel();
+    } else {
+      this.toast('Turbo training failed', { kind: 'error', details: [m.message] });
+      this.stopTurbo(false);
+      this.loop.paused = false;
+    }
   }
 
   /** Starts the classic infinite road (training on a 3-lane road with traffic). */
@@ -735,6 +901,19 @@ export class App {
   }
 
   // --- brains -----------------------------------------------------------------
+
+  /** Loads the bundled pre-trained brain (public/brains) as the fallback training seed. */
+  private async loadPretrained(): Promise<void> {
+    try {
+      const res = parseBrain(JSON.parse(await this.fetchText('brains/pretrained.brain.json')));
+      if (res.ok) {
+        this.pretrained = res.net;
+        this.syncTrainingPanel();
+      } else console.warn('bundled brain rejected', res.errors);
+    } catch (e) {
+      console.warn('could not load the bundled brain', e);
+    }
+  }
 
   private loadSavedBrain(): void {
     try {
@@ -985,6 +1164,7 @@ export class App {
     this.fadeUntil = this.clockMs + (this.reducedMotion ? 150 : 450);
     this.topbar.view.set(view);
     this.cameraChips.show(view === '3d');
+    this.viewSettings.show(view === '3d');
     this.stage.setAttribute(
       'aria-label',
       view === '3d'
@@ -1007,6 +1187,18 @@ export class App {
         const rect = this.stage.getBoundingClientRect();
         r.resize(rect.width, rect.height, Math.min(window.devicePixelRatio || 1, 2));
         this.attach3dPicking(r);
+        const v = this.view3d;
+        r.setQuality(v.quality);
+        r.governor.enabled = v.autoQuality;
+        r.setTimeOfDay(v.time);
+        r.autoCycle = v.cycle;
+        r.onAutoDowngrade = (q) => {
+          this.view3d.quality = q;
+          this.viewSettings.set(this.view3d);
+          this.toast(`Frames were slow, so 3D quality was lowered to ${q}`, {
+            details: ['Turn off Auto next to the quality preset to keep your choice.'],
+          });
+        };
         this.renderer3d = r;
         console.info(`3D renderer: ${r.glRenderer}`);
         return r;
@@ -1080,6 +1272,18 @@ export class App {
       this.pickedCarId = null;
     }
     return hit;
+  }
+
+  /** Tweens between day and night in the 3D view. */
+  toggleDayNight(): void {
+    const r = this.renderer3d;
+    if (!r) return;
+    const toNight = r.lighting.night < 0.5;
+    const t = toNight ? 0.93 : 0.42;
+    r.setTimeOfDay(t, this.reducedMotion ? 300 : 1800);
+    this.view3d.time = t;
+    setPref('timeOfDay', t);
+    this.toast(toNight ? 'Night' : 'Day');
   }
 
   setCameraMode(mode: CameraMode): void {
@@ -1624,6 +1828,10 @@ export class App {
       case 'view.toggle3d':
         this.setView(this.view === '3d' ? '2d' : '3d');
         break;
+      case 'view.dayNight':
+        if (this.view === '3d') this.toggleDayNight();
+        else this.toast('Day and night apply to the 3D view (press V)');
+        break;
       case 'view.cycleCamera':
         if (this.view === '3d') {
           this.setCameraMode(nextCameraMode(this.cameraMode));
@@ -1703,6 +1911,26 @@ export class App {
         setRenderView: (v: '2d' | '3d') => this.switchView(v),
         setCameraMode: (m: CameraMode) => this.setCameraMode(m),
         rebuild3d: () => this.renderer3d?.rebuild(),
+        setTimeOfDay: (t: number, ms = 0) => {
+          this.view3d.time = t;
+          this.renderer3d?.setTimeOfDay(t, ms);
+          this.viewSettings.setTime(t);
+        },
+        setQuality: (q: QualityLevel, auto = false) => {
+          this.view3d.quality = q;
+          this.view3d.autoQuality = auto;
+          if (this.renderer3d) {
+            this.renderer3d.setQuality(q);
+            this.renderer3d.governor.enabled = auto;
+          }
+          this.viewSettings.set(this.view3d);
+        },
+        setTurbo: (on: boolean) => (on ? this.startTurbo() : (this.stopTurbo(true), true)),
+        setAutoCycle: (on: boolean) => {
+          this.view3d.cycle = on;
+          if (this.renderer3d) this.renderer3d.autoCycle = on;
+          this.viewSettings.set(this.view3d);
+        },
         frame3d: (x: number, y: number, radius: number) => this.renderer3d?.rig.frame(x, y, radius),
         pick3d: (x: number, y: number) => this.pick3dAt(x, y),
         project3d: (x: number, y: number) => this.renderer3d?.worldToScreen(x, y) ?? null,
@@ -1782,6 +2010,16 @@ export class App {
         return r ? { loaded: true, ready: r.ready, ...r.stats() } : { loaded: false, ready: false };
       },
       focusCarId: () => this.frameCtx.focusCarId,
+      turbo: () =>
+        this.turbo
+          ? {
+              running: true,
+              generation: this.turbo.generation,
+              bestEver: this.turbo.bestEver,
+              stopping: this.turbo.stopping,
+            }
+          : { running: false, adopted: this.turboBrain !== null },
+      pretrained: () => this.pretrained !== null,
       focusCar: () => {
         const id = this.frameCtx.focusCarId;
         const c = id !== null ? this.sim?.getCar(id) : undefined;

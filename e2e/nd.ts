@@ -45,6 +45,15 @@ export interface NDHooks {
     cameraMode?: string;
     camera?: [number, number, number];
     glRenderer?: string;
+    quality?: string;
+    autoQuality?: boolean;
+    bloom?: boolean;
+    shadows?: boolean;
+    timeOfDay?: number;
+    night?: number;
+    rays?: number;
+    markings?: number;
+    avgFrameMs?: number;
   };
   sim: { stepCount: number; carCount: number; carPositions: number[][] } | null;
   viewport: { zoom: number; center: { x: number; y: number } };
@@ -69,6 +78,9 @@ export interface NDHooks {
     setCameraMode(m: string): void;
     rebuild3d(): void;
     frame3d(x: number, y: number, radius: number): void;
+    setTimeOfDay(t: number, ms?: number): void;
+    setQuality(q: 'low' | 'medium' | 'high', auto?: boolean): void;
+    setAutoCycle(on: boolean): void;
     pick3d(x: number, y: number): { kind: string; id: number | null } | null;
     project3d(x: number, y: number): { x: number; y: number } | null;
   };

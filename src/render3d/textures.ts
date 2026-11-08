@@ -102,7 +102,7 @@ export function textTexture(
   bg: string,
   fg: string,
   size = 128,
-  shape: 'octagon' | 'square' | 'circle' = 'square',
+  shape: 'octagon' | 'square' | 'circle' | 'triangle' = 'square',
 ): THREE.CanvasTexture {
   const [c, g] = canvas(size);
   g.clearRect(0, 0, size, size);
@@ -117,6 +117,11 @@ export function textTexture(
       if (i === 0) g.moveTo(x, y);
       else g.lineTo(x, y);
     }
+  } else if (shape === 'triangle') {
+    // inverted triangle (yield)
+    g.moveTo(size * 0.04, size * 0.1);
+    g.lineTo(size * 0.96, size * 0.1);
+    g.lineTo(r, size * 0.94);
   } else if (shape === 'circle') g.arc(r, r, r * 0.96, 0, Math.PI * 2);
   else g.roundRect(4, 4, size - 8, size - 8, size * 0.12);
   g.closePath();
@@ -130,4 +135,43 @@ export function textTexture(
   g.textBaseline = 'middle';
   g.fillText(text, r, r + size * 0.03);
   return finish(c, false);
+}
+
+/** Road paint decal: text on a transparent background (e.g. "STOP", "P"). */
+export function decalTexture(text: string, color: string, size = 256): THREE.CanvasTexture {
+  const [c, g] = canvas(size);
+  g.clearRect(0, 0, size, size);
+  g.fillStyle = color;
+  g.font = `800 ${Math.round(size * (text.length > 2 ? 0.34 : 0.7))}px system-ui, sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, size / 2, size / 2 + size * 0.03);
+  return finish(c, false);
+}
+
+/** Checkered start banner. */
+export function checkerTexture(): THREE.CanvasTexture {
+  const [c, g] = canvas(128);
+  for (let y = 0; y < 4; y++)
+    for (let x = 0; x < 16; x++) {
+      g.fillStyle = (x + y) % 2 === 0 ? '#f5f7fb' : '#10141c';
+      g.fillRect(x * 8, y * 8 + 48, 8, 8);
+    }
+  g.clearRect(0, 0, 128, 48);
+  g.clearRect(0, 80, 128, 48);
+  return finish(c, false);
+}
+
+/**
+ * Vertical alpha gradient for light beams and cones: opaque at v = 0 and clear at v = 1
+ * (or the reverse with `invert`).
+ */
+export function fadeTexture(invert = false): THREE.CanvasTexture {
+  const [c, g] = canvas(64);
+  const grd = g.createLinearGradient(0, 0, 0, 64);
+  grd.addColorStop(0, invert ? '#ffffff' : '#000000');
+  grd.addColorStop(1, invert ? '#000000' : '#ffffff');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  return finish(c, false, false);
 }

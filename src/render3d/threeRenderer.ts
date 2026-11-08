@@ -1,5 +1,5 @@
 /**
- * Three.js renderer (spec K1 to K5, K9, K11). This module and everything it imports is
+ * Three.js renderer (spec K1 to K11). This module and everything it imports is
  * loaded on demand with a dynamic `import()`, so Three.js never weighs on the initial
  * bundle. Constructing it throws when a WebGL context cannot be created; the app catches
  * that, shows a toast and stays in 2D.
@@ -7,9 +7,11 @@
  * Mapping: engine (x, y) → three (x, 0, y), Y up; a car heading `a` is a rotation of `a`
  * about +Y because car meshes face −Z.
  *
- * Per frame: car instances are rewritten in place, the focused car gets a full-detail
- * mesh, the camera rig and the sun's shadow box follow, then one `render` call. Draw
- * calls and triangles come from `renderer.info` (reset manually so shadow passes count).
+ * Per frame: car instances, sensor rays, particles, skid marks, headlight cones and lamp
+ * colours are rewritten in place, the focused car gets a full-detail mesh and a real spot
+ * light at night, the camera rig, the sun's shadow box and the sky follow, then the
+ * frame goes through the bloom composer (or straight to the canvas on Low quality). Draw
+ * calls and triangles come from `renderer.info` (reset manually so every pass counts).
  *
  * @module render3d/threeRenderer
  */
@@ -18,6 +20,7 @@ import type { CameraMode, FrameContext, PickResult, Renderer } from '../app/rend
 import { pickWorld } from '../app/picking.ts';
 import type { Vec2 } from '../engine/math/vec2.ts';
 import type { Car } from '../engine/car/car.ts';
+import type { Sensor } from '../engine/car/sensor.ts';
 import { CAR_COLORS } from '../engine/car/carFactory.ts';
 import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
 import type { SimHost } from '../engine/sim/host.ts';
@@ -30,11 +33,17 @@ import {
   type CarGeometries,
   type CarMaterials,
 } from './carMeshFactory.ts';
-import { CarInstances } from './instancing.ts';
+import { CarInstances, MAX_CARS } from './instancing.ts';
 import { Lighting } from './lighting.ts';
 import { buildWorldMeshes, InfiniteStrip, type WorldMeshes } from './sceneBuilder.ts';
+import { Headlights, ParticleCloud, SensorRays, SkidTrail } from './effects.ts';
+import { MarkingMeshes } from './markingsMesh.ts';
+import { PostFX, QUALITY_ORDER, QUALITY_PRESETS, QualityGovernor, type Quality } from './postfx.ts';
+import { easeInOutCubic } from '../anim/easing.ts';
+import { Y_SIDEWALK } from './roadsMesh.ts';
 
 const NO_CARS: readonly Car[] = [];
+const NO_SENSORS: readonly Sensor[] = [];
 
 /** Snapshot of renderer statistics for the debug hooks and the stats overlay. */
 export interface ThreeStats {
@@ -48,7 +57,20 @@ export interface ThreeStats {
   cameraMode: CameraMode;
   camera: [number, number, number];
   glRenderer: string;
+  quality: Quality;
+  autoQuality: boolean;
+  bloom: boolean;
+  shadows: boolean;
+  timeOfDay: number;
+  night: number;
+  autoCycle: boolean;
+  rays: number;
+  markings: number;
+  avgFrameMs: number;
 }
+
+/** Seconds for one full day in auto-cycle mode. */
+export const DAY_SECONDS = 240;
 
 export class ThreeRenderer implements Renderer {
   readonly kind = '3d' as const;
@@ -91,6 +113,20 @@ export class ThreeRenderer implements Renderer {
   private framedVersion = -1;
   private framedInfinite = false;
   private forceRebuild = false;
+  private readonly sensors = new SensorRays();
+  private readonly particles = new ParticleCloud(2048);
+  private readonly skids = new SkidTrail(4096);
+  private readonly headlights = new Headlights(MAX_CARS);
+  private readonly markings = new MarkingMeshes();
+  private readonly spot: THREE.SpotLight;
+  readonly postfx: PostFX;
+  readonly governor = new QualityGovernor(20, 3);
+  quality: Quality = 'medium';
+  /** Called when the governor lowers the quality on its own. */
+  onAutoDowngrade: ((q: Quality) => void) | null = null;
+  /** Auto day/night cycle. */
+  autoCycle = false;
+  private timeTween: { from: number; to: number; t: number; ms: number } | null = null;
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -118,7 +154,63 @@ export class ThreeRenderer implements Renderer {
     this.instances = new CarInstances(this.carGeo, this.carMats);
     this.detailed = new DetailedCar(this.carGeo, this.carMats);
     this.detailed.group.visible = false;
-    this.scene.add(this.instances.group, this.detailed.group);
+    // the focused car's real headlight (the others get additive cones)
+    this.spot = new THREE.SpotLight('#ffe6b8', 0, 900, 0.5, 0.55, 1.1);
+    this.spot.position.set(0, 11, -26);
+    this.spot.target.position.set(0, 0, -260);
+    this.detailed.group.add(this.spot, this.spot.target);
+    this.scene.add(
+      this.instances.group,
+      this.detailed.group,
+      this.sensors.group,
+      this.particles.group,
+      this.skids.mesh,
+      this.headlights.mesh,
+      this.markings.group,
+    );
+    this.postfx = new PostFX(gl, this.scene, this.rig.camera);
+    this.setQuality(this.quality);
+  }
+
+  /** Applies a quality preset: pixel-ratio cap, shadow map size and bloom. */
+  setQuality(q: Quality): void {
+    this.quality = q;
+    const p = QUALITY_PRESETS[q];
+    this.pixelRatioCap = p.pixelRatio;
+    this.lighting.setShadowMapSize(p.shadowMap);
+    this.postfx.configure(p.bloom, p.bloomScale);
+    this.resize(this.width, this.height, this.dpr);
+    this.governor.reset();
+  }
+
+  /** Sets the time of day, optionally tweening there over `ms` (easeInOutCubic). */
+  setTimeOfDay(t: number, ms = 0): void {
+    if (ms <= 0) {
+      this.timeTween = null;
+      this.lighting.setTimeOfDay(t);
+      return;
+    }
+    const from = this.lighting.timeOfDay;
+    // take the short way round the clock
+    let to = ((t % 1) + 1) % 1;
+    if (to - from > 0.5) to -= 1;
+    if (from - to > 0.5) to += 1;
+    this.timeTween = { from, to, t: 0, ms };
+  }
+
+  get timeOfDay(): number {
+    return this.lighting.timeOfDay;
+  }
+
+  private advanceTime(dtMs: number): void {
+    const tw = this.timeTween;
+    if (tw) {
+      tw.t = Math.min(1, tw.t + dtMs / tw.ms);
+      this.lighting.setTimeOfDay(tw.from + (tw.to - tw.from) * easeInOutCubic(tw.t));
+      if (tw.t >= 1) this.timeTween = null;
+    } else if (this.autoCycle) {
+      this.lighting.setTimeOfDay(this.lighting.timeOfDay + dtMs / 1000 / DAY_SECONDS);
+    }
   }
 
   private static rendererString(gl: THREE.WebGLRenderer): string {
@@ -144,6 +236,8 @@ export class ThreeRenderer implements Renderer {
     this.canvas.style.height = `${this.height}px`;
     this.rig.camera.aspect = this.width / this.height;
     this.rig.camera.updateProjectionMatrix();
+    // postfx is created after the first resize in the constructor
+    if (this.postfx as PostFX | undefined) this.postfx.setSize(this.width, this.height);
   }
 
   /** Changes the pixel-ratio cap (quality presets) and reapplies the size. */
@@ -228,6 +322,16 @@ export class ThreeRenderer implements Renderer {
       cameraMode: this.rig.mode,
       camera: [cam.x, cam.y, cam.z],
       glRenderer: this.glRenderer,
+      quality: this.quality,
+      autoQuality: this.governor.enabled,
+      bloom: this.postfx.bloomEnabled,
+      shadows: this.lighting.sun.castShadow,
+      timeOfDay: this.lighting.timeOfDay,
+      night: this.lighting.night,
+      autoCycle: this.autoCycle,
+      rays: this.sensors.rayCount,
+      markings: this.markings.count,
+      avgFrameMs: this.governor.avgMs,
     };
   }
 
@@ -325,19 +429,59 @@ export class ThreeRenderer implements Renderer {
     const n = this.cinematicTargets(sim, frame.bestCarId);
     this.rig.update(dt, fi, n > 0 ? this.cine : null, n);
     const look = this.rig.look;
-    const dist = this.rig.camera.position.distanceTo(look);
+    const cam = this.rig.camera;
+    const dist = cam.position.distanceTo(look);
     this.lighting.follow(look.x, look.z, dist * 0.9);
     this.lighting.fitFog(dist);
+    this.lighting.centerSky(cam);
+
+    // time of day and everything driven by it
+    this.advanceTime(frame.dtMs);
+    const night = this.lighting.night;
     if (this.world) {
       this.world.trees.setTime(frame.reducedMotion ? 0 : frame.timeMs / 1000);
-      this.world.buildings.setNight(this.lighting.night);
+      this.world.buildings.setNight(night);
+      this.world.streetLights.setNight(night);
     }
+    this.postfx.setNight(night);
+    this.spot.intensity = d.group.visible ? night * 2600 : 0;
+
+    // markings, rays, particles, skid marks, headlights
+    const rw = frame.model.settings.roadWidth;
+    this.markings.sync(
+      frame.model,
+      rw,
+      frame.lights,
+      frame.timeMs / 1000,
+      frame.layers.markings && !infinite,
+    );
+    if (sim) {
+      this.sensors.update(frame.focusSensor, frame.extraSensors);
+      this.particles.update(sim.particles, this.height, cam.fov);
+      this.skids.update(sim.skids, sim.time, Y_SIDEWALK + 0.9);
+      this.headlights.update(sim.cars, frame.alpha, night);
+    } else {
+      this.sensors.update(null, NO_SENSORS);
+      this.headlights.update(NO_CARS, 0, 0);
+    }
+    this.particles.group.visible = sim !== null;
+    this.skids.mesh.visible = sim !== null;
 
     this.gl.info.reset();
-    this.gl.render(this.scene, this.rig.camera);
+    this.postfx.render();
     this.drawCalls = this.gl.info.render.calls;
     this.triangles = this.gl.info.render.triangles;
     if (this.world || this.strip) this.ready = true;
+
+    // auto-downgrade when frames stay slow
+    if (this.governor.sample(frame.dtMs)) {
+      const i = QUALITY_ORDER.indexOf(this.quality);
+      if (i > 0) {
+        const q = QUALITY_ORDER[i - 1] as Quality;
+        this.setQuality(q);
+        this.onAutoDowngrade?.(q);
+      }
+    }
   }
 
   /** Frames the whole world once per new world (orbit mode only). */
@@ -390,6 +534,12 @@ export class ThreeRenderer implements Renderer {
     }
     this.instances.dispose();
     this.detailed.dispose();
+    this.sensors.dispose();
+    this.particles.dispose();
+    this.skids.dispose();
+    this.headlights.dispose();
+    this.markings.dispose();
+    this.postfx.dispose();
     this.carGeo.dispose();
     this.carMats.dispose();
     this.lighting.dispose();
