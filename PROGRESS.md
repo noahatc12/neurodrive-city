@@ -16,10 +16,9 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 7     | 3D renderer foundation                                             | done        |
 | 8     | 3D polish, pre-trained brain, turbo worker                         | done        |
 | 9     | Stretch, accessibility, UX polish                                  | done        |
-| 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
+| 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | done        |
 
-**Next:** Phase 10, docs and final audit (README, COMPARISON.md, docs/media, Definition of Done
-audit, tag v1.0.0).
+**Next:** v1.0.0 is complete. Ideas beyond the Definition of Done are in `BACKLOG.md`.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -359,6 +358,56 @@ final Definition of Done audit. Tag `v1.0.0`.
 | SEO and metadata | `lang`, viewport, description, colour scheme, title, favicon, `noscript` | Pass |
 | Responsive | 1280×720 without overlap or horizontal scroll; top bar collapses to icons under 1100 px; panels collapse | Pass (automated at 1280×720) |
 | Responsive | Touch: one-finger pan and pinch zoom in 2D | Pass (implemented in Phase 2; best effort on phones) |
+
+### Phase 10 (2026-11-07), tag v1.0.0
+
+- `npm run verify`: typecheck 0, lint 0, 27 test files / 240 tests, build OK, e2e 24 passed.
+- Build under the Pages base path (`VITE_BASE=/neurodrive-city/`, as the e2e web server runs it):
+  initial chunk 247.04 kB (gzip 79.92 kB); lazy 3D chunk 681.41 kB (gzip 173.89 kB).
+- Coverage (`npm run test:coverage`): all engine files 97.72% lines (ai 91.3, car 100, graph 99.33,
+  io 98.65, markings 99.22, math 100, nav 97.99, osm 99.14, sim 94.77, world 99.81).
+- Docs: README rewritten (features, five Mermaid diagrams, "Beyond the course", honest AI
+  navigation results, controls, tech stack, measured performance, testing, deploy, GIF capture,
+  roadmap, acknowledgements); `COMPARISON.md` with one row per baseline line (15 rows, each with
+  evidence); `docs/media/` holds the Playwright screenshots used by the README.
+- Polish: the World menu works from the keyboard (arrows, Home, End, Esc returns focus), entering
+  Simulate eases the 2D camera to your car instead of cutting, and mode switches crossfade the view.
+
+#### Definition of Done audit
+
+| Item | Status | Evidence |
+| ---- | ------ | -------- |
+| `npm run verify` green | Done | Phase 10 gate above |
+| CI and deploy workflows present; build works under `/neurodrive-city/` | Done | `.github/workflows/ci.yml`, `deploy.yml`; e2e runs the production build under that base |
+| Features A1 to L5 and M (partial only F5, J6, L2 speed lines) | Done | Feature audit below; F5 works but does not learn turns (documented), J6 complete, 3D speed lines in BACKLOG |
+| `COMPARISON.md`, one row per baseline line | Done | 15 rows |
+| Engine coverage at least 80% | Done | 97.72% lines |
+| Screenshots editor-2d, sim-2d, sim-3d-day, sim-3d-night, osm-import in `docs/media/` | Done | plus osm-3d, train-2d, infinite-road, tour |
+| Zero console errors | Done | Shared fixture fails any spec on `console.error` or a page error |
+| Performance budgets measured | Done | README "Performance"; 300-car step 1.6 ms, 77 draw calls, initial JS about 80 KB gzip |
+| Pre-trained brain in `public/brains/` | Done | `pretrained.brain.json`, test drives 60 s without damage |
+| README complete | Done | All sections listed in the spec |
+| BACKLOG complete | Done | `BACKLOG.md` |
+| At least 11 phase commits; tags v0.9-2d and v1.0.0 | Done | 11 commits (phases 0 to 10); tags applied |
+
+#### Feature audit (spec A to M)
+
+| Group | Items | Status |
+| ----- | ----- | ------ |
+| A Engine foundations | A1 vectors, A2 intersections, A3 polygons, A4 graph, A5 spatial hash | Done (math 100%, graph 99% lines) |
+| B Editor | B1 graph tool, B2 grid snap, B3 undo/redo, B4 viewport, B5 markings, B6 dispose, B7 shortcuts, B8 segment tools, B9 settings and layers | Done |
+| C World generation | C1 envelopes, C2 union borders, C3 surfaces, C4 markings, C5 buildings, C6 trees, C7 version-gated regeneration and worker, C8 sidewalks | Done |
+| D Markings | D1 stop, D2 yield, D3 crossing (pedestrians optional: in BACKLOG), D4 parking, D5 lights, D6 start and target | Done |
+| E Cars | E1 kinematics, E2 control sources, E3 polygon and damage, E4 sensors | Done |
+| F Navigation | F1 lane graph, F2 A*, F3 route follower, F4 traffic | Done |
+| F5 AI navigation (stretch) | Toggle, route inputs, documented experiments | Partial, as allowed: does not pass the first corner |
+| G Neural network | G1 network, G2 mutation, G3 parallel training, G4 fitness, G5 generations, G6 persistence and pre-trained brain, G7 infinite road, G8 turbo worker | Done |
+| H Visualizer | H1 panel, H2 weight colours, H3 bias rings and activations, H4 header and sparkline, H5 at most 30 Hz when visible | Done |
+| I Minimap | I1 canvas minimap, I2 click or drag to move the camera (2D and 3D), I3 cached static layer | Done |
+| J Save, load, OSM | J1 world JSON and IndexedDB library, J2 files and drag-and-drop, J3 dialog, J4 parser, J5 progress overlay, J6 buildings and water | Done (J6 stretch complete) |
+| K 3D | K1 lazy load and fallback, K2 ground and roads, K3 buildings, K4 trees, K5 cars, K6 sensors, K7 markings, K8 lighting and day/night, K9 cameras, K10 bloom and presets, K11 picking | Done |
+| L Effects | L1 easing, L2 particles (3D speed lines optional: in BACKLOG), L3 UI motion, L4 2D polish, L5 visual style | Done |
+| M Layout | Top bar, toolbar, right panel, minimap, camera chips and quality preset, HUD legend, onboarding tour, 1280×720 | Done |
 
 ## Known issues
 

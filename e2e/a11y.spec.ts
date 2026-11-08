@@ -166,3 +166,21 @@ test('training controls show only in Train mode', async ({ page }) => {
   await expect(page.getByText('Route inputs (AI navigation)')).toBeVisible();
   await expect(page.getByText('Curvy road')).toBeHidden();
 });
+
+test('the World menu works from the keyboard', async ({ page }) => {
+  await page.goto('./');
+  await waitForApp(page);
+  const button = page.getByRole('button', { name: 'World menu' });
+  await button.click();
+  const first = page.getByRole('menuitem', { name: 'Demo city' });
+  await expect(first).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('menuitem', { name: 'Ring road' })).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(page.getByRole('menuitem', { name: 'Dispose world' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(first).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
+  await expect(button).toBeFocused();
+});

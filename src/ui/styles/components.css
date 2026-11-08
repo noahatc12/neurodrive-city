@@ -1408,3 +1408,16 @@ input[type='range'] {
     transition: none;
   }
 }
+
+/* Edit / Simulate / Train switch: a short crossfade of the view (spec L3) */
+@keyframes mode-fade {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.stage.mode-fade {
+  animation: mode-fade 320ms var(--ease-out);
+}

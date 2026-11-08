@@ -182,6 +182,23 @@ export class Topbar {
     document.addEventListener('click', (e) => {
       if (this.open && !this.menu.contains(e.target as Node)) this.toggle(false);
     });
+    // menu keyboard: arrows move between items, Home/End jump, Esc closes and returns focus
+    this.menu.addEventListener('keydown', (e) => {
+      const items = [...this.items.values()].filter((b) => !b.disabled);
+      const i = items.indexOf(document.activeElement as HTMLButtonElement);
+      let next: HTMLButtonElement | undefined;
+      if (e.key === 'Escape') {
+        this.toggle(false);
+        this.menuBtn.focus();
+      } else if (e.key === 'ArrowDown') next = items[(i + 1) % items.length];
+      else if (e.key === 'ArrowUp') next = items[(i - 1 + items.length) % items.length];
+      else if (e.key === 'Home') next = items[0];
+      else if (e.key === 'End') next = items[items.length - 1];
+      else return;
+      next?.focus();
+      e.preventDefault();
+      e.stopPropagation();
+    });
   }
 
   setItemEnabled(id: string, enabled: boolean): void {

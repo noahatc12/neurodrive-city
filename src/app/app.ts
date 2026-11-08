@@ -718,8 +718,9 @@ export class App {
         );
         if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd };
       }
+      // ease the camera to the car instead of cutting (spec L3)
       const focus = sim.manual ?? pop.bestCar;
-      this.viewport.set({ x: focus.x, y: focus.y }, Math.max(this.viewport.zoom, 0.7));
+      this.viewport.panTo({ x: focus.x, y: focus.y }, Math.max(this.viewport.zoom, 0.7));
     }
     this.simKey = key;
     this.manualCrashAt = -1;
@@ -1190,6 +1191,12 @@ export class App {
     this.topbar.mode.set(mode);
     this.editor.editable = mode === 'edit';
     this.root.querySelector('.app')?.setAttribute('data-mode', mode);
+    // short crossfade of the view on every mode switch (spec L3)
+    if (!this.reducedMotion) {
+      this.stage.classList.remove('mode-fade');
+      void this.stage.offsetWidth; // restart the animation
+      this.stage.classList.add('mode-fade');
+    }
     this.minimap.el.classList.toggle('hidden', !this.layers.minimap);
     if (mode !== 'edit') this.editor.cancel();
   }
