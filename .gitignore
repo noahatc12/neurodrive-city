@@ -1,0 +1,19 @@
+# deps and builds
+node_modules
+dist
+dist-ssr
+*.local
+
+# test output
+coverage
+playwright-report
+test-results
+blob-report
+
+# editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.log

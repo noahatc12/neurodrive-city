@@ -1,0 +1,11 @@
+dist
+coverage
+playwright-report
+test-results
+node_modules
+public/worlds
+public/brains
+e2e/__screenshots__
+docs/media
+package-lock.json
+*.md
