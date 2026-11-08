@@ -1,0 +1,16 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`world/generateWorld > is deterministic for a fixed seed (snapshot of counts) and differs across seeds 1`] = `
+{
+  "arrows": 8,
+  "buildings": 76,
+  "centerLines": 46,
+  "curbs": 200,
+  "edgeLines": 198,
+  "laneGuides": 200,
+  "roadBorders": 200,
+  "roads": 46,
+  "sidewalks": 46,
+  "trees": 67,
+}
+`;

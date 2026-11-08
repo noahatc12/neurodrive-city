@@ -1,0 +1,9 @@
+# Cloudflare Pages headers (ignored by GitHub Pages).
+# Vite puts content-hashed files in /assets, so they can be cached for a year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
