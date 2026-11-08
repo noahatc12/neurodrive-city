@@ -6,8 +6,8 @@ Status of every phase, the next step, known issues, and gate evidence.
 
 | Phase | Title                                                              | Status      |
 | ----- | ------------------------------------------------------------------ | ----------- |
-| 0     | Scaffold and tooling                                               | in progress |
-| 1     | Math, graph, spatial hash                                          | pending     |
+| 0     | Scaffold and tooling                                               | done (2ac7d05) |
+| 1     | Math, graph, spatial hash                                          | done        |
 | 2     | 2D editor and viewport                                             | pending     |
 | 3     | World generation and 2D world rendering                            | pending     |
 | 4     | Markings, save/load, OSM                                           | pending     |
@@ -18,7 +18,7 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** finish Phase 0 gate and commit.
+**Next:** Phase 2, 2D editor and viewport.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -77,7 +77,33 @@ final Definition of Done audit. Tag `v1.0.0`.
 
 ## Gate evidence
 
-(filled per phase)
+### Phase 0 (2026-11-07)
+
+- `npm run typecheck`: 0 errors (three projects).
+- `npm run lint`: 0 errors, 0 warnings.
+- `npm run test`: 1 file, 8 tests passed.
+- `npm run build`: main chunk `index-*.js` 1.86 kB (gzip 1.00 kB), CSS 1.02 kB gzip.
+- `npm run e2e`: 1 passed (smoke: zero console errors, canvas variance above threshold).
+- Screenshot `e2e/__screenshots__/phase-0-editor-2d.png`: dark teal animated grid filling the
+  viewport with a centred glass card reading "NeuroDrive City" in a cyan to magenta gradient and
+  the subtitle "Self-driving cars that learn. Coming online." Not blank.
+
+### Phase 1 (2026-11-07)
+
+- `npm run typecheck`: 0 errors. `npm run lint`: 0 errors, 0 warnings.
+- `npm run test:coverage`: 8 files, 85 tests passed. Coverage (src/engine): lines 99.67%,
+  statements 98.58%, branches 93.78%, functions 100%. `engine/math` lines 100%,
+  `engine/graph` lines 99.26% (thresholds 90% for both, 80% for the engine overall).
+- Union benchmark: 500 rounded-rectangle road polygons (20 vertices each) unioned in 25.3 ms
+  into 4352 border segments (budget: well under 1 s).
+- `npm run build`: unchanged app, main chunk gzip 1.00 kB. `npm run e2e`: 1 passed.
+- Delivered: `vec2.ts` (pure and allocation-free variants), `intersect.ts` (crossing, parallel,
+  collinear overlap, endpoint touch, documented epsilons), `polygon.ts` (half-open ray-cast
+  containment, true segment distance, classifySegment, splitParams, breakAtIntersections without
+  mutation or zero-length pieces, union with outward-probe border test), `rng.ts` (mulberry32,
+  fork, state save/restore), `bbox.ts`, `spatialHash.ts` (incremental, stamp-deduped queries),
+  `point.ts`, `segment.ts`, `graph.ts` (stable ids, version counter, events, picking index,
+  split, restore for undo, id-independent hash).
 
 ## Known issues
 
