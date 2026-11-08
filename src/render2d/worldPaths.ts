@@ -9,6 +9,8 @@ import type { WorldGeometry } from '../engine/world/world.ts';
 
 export interface WorldPaths {
   version: number;
+  /** Water polygons (OSM features, J6). */
+  water: Path2D;
   sidewalks: Path2D;
   roads: Path2D;
   /** Road surface shifted toward the light: a cheap soft shadow. */
@@ -80,6 +82,7 @@ export function buildWorldPaths(geo: WorldGeometry, roadWidth: number): WorldPat
     arrows.closePath();
   }
   return {
+    water: polysPath(d.water ?? []),
     version: geo.version,
     sidewalks: polysPath(d.sidewalks),
     roads: polysPath(roadPts),

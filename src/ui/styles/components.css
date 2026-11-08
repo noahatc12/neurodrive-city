@@ -1333,3 +1333,78 @@ input[type='range'] {
   width: 40px;
   text-align: right;
 }
+
+/* ==========================================================================
+   Onboarding tour (coach marks)
+   ========================================================================== */
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #05080e8c;
+  transition: opacity var(--dur) var(--ease-out);
+}
+.tour.hidden {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+.tour-ring {
+  position: fixed;
+  border: 2px solid var(--cyan);
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 4px #22d3ee33,
+    0 0 24px #22d3ee66;
+  transition:
+    left var(--dur-slow) var(--ease-out),
+    top var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-out),
+    height var(--dur-slow) var(--ease-out);
+  pointer-events: none;
+}
+.tour-card {
+  position: fixed;
+  padding: 14px 16px 12px;
+  display: grid;
+  gap: 6px;
+  transition:
+    left var(--dur-slow) var(--ease-out),
+    top var(--dur-slow) var(--ease-out);
+}
+.tour-count {
+  font-size: 11px;
+  color: var(--cyan);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tour-title {
+  margin: 0;
+  font-size: 16px;
+}
+.tour-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.tour-actions .spacer {
+  flex: 1;
+}
+.help-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring,
+  .tour-card {
+    transition: none;
+  }
+}

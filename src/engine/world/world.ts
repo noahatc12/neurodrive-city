@@ -26,7 +26,17 @@ import { generateBuildings } from './buildings.ts';
 import { laneGuides } from './laneGuides.ts';
 import { centerLines, envelopes, oneWayArrows, resolveSegments, unionBorders } from './roads.ts';
 import { generateTrees } from './trees.ts';
-import type { GenerateOptions, WorldGeometryData, WorldInput } from './types.ts';
+import type {
+  BuildingData,
+  GenerateOptions,
+  WorldFeatures,
+  WorldGeometryData,
+  WorldInput,
+} from './types.ts';
+import { bboxOverlap, segmentBBox } from '../math/bbox.ts';
+import { segmentSegmentDistance } from '../math/intersect.ts';
+import { polygonContainsPoint, polygonsIntersect } from '../math/polygon.ts';
+import type { ResolvedSegment } from './roads.ts';
 
 export * from './types.ts';
 
@@ -45,7 +55,87 @@ export function worldInputFrom(model: WorldModel): WorldInput {
     })),
     settings: { ...model.settings },
     seed: model.seed,
+    ...(model.features.buildings.length > 0 || model.features.water.length > 0
+      ? {
+          features: {
+            buildings: model.features.buildings.map((p) => p.map((v) => ({ x: v.x, y: v.y }))),
+            water: model.features.water.map((p) => p.map((v) => ({ x: v.x, y: v.y }))),
+          },
+        }
+      : {}),
   };
+}
+
+/** True when a polygon comes within `clear` of any road centre segment (or contains one). */
+function nearRoad(
+  poly: Polygon,
+  segs: readonly ResolvedSegment[],
+  hash: SpatialHash,
+  clear: number,
+  scratch: number[],
+): boolean {
+  const b = poly.bbox;
+  scratch.length = 0;
+  hash.queryRect(b.minX - clear, b.minY - clear, b.maxX + clear, b.maxY + clear, scratch);
+  for (const i of scratch) {
+    const s = segs[i];
+    if (!s) continue;
+    if (polygonContainsPoint(poly, s.a) || polygonContainsPoint(poly, s.b)) return true;
+    for (const e of poly.segments)
+      if (segmentSegmentDistance(e.a, e.b, s.a, s.b) < clear) return true;
+  }
+  return false;
+}
+
+/**
+ * Imported OSM footprints become flat-roofed buildings of any polygon shape (spec J6).
+ * Footprints that come too close to a road or sit in water are dropped; the height is
+ * seeded and grows with the footprint area.
+ */
+function featureBuildings(
+  features: WorldFeatures,
+  segs: readonly ResolvedSegment[],
+  roadClear: number,
+  water: readonly Polygon[],
+  rng: Rng,
+): { buildings: BuildingData[]; polygons: Polygon[] } {
+  const hash = new SpatialHash(200);
+  segs.forEach((s, i) => hash.insert(i, segmentBBox(s.a, s.b)));
+  const scratch: number[] = [];
+  const buildings: BuildingData[] = [];
+  const polygons: Polygon[] = [];
+  for (const ring of features.buildings) {
+    if (ring.length < 3) continue;
+    const poly = new Polygon(ring);
+    if (poly.area < 4) continue;
+    if (nearRoad(poly, segs, hash, roadClear, scratch)) continue;
+    if (water.some((w) => bboxOverlap(w.bbox, poly.bbox) && polygonsIntersect(w, poly))) continue;
+    let cx = 0;
+    let cy = 0;
+    for (const p of ring) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= ring.length;
+    cy /= ring.length;
+    const w = poly.bbox.maxX - poly.bbox.minX;
+    const h = poly.bbox.maxY - poly.bbox.minY;
+    const height = Math.min(260, Math.max(70, Math.sqrt(poly.area) * 0.9)) * rng.range(0.85, 1.2);
+    buildings.push({
+      base: ring.map((p) => ({ x: p.x, y: p.y })),
+      center: { x: cx, y: cy },
+      angle: 0,
+      length: Math.max(w, h),
+      depth: Math.min(w, h),
+      height,
+      roof: 'flat',
+      tint: rng.next(),
+      detailSeed: rng.int(0, 1_000_000),
+      osm: true,
+    });
+    polygons.push(poly);
+  }
+  return { buildings, polygons };
 }
 
 /** Runs the full generation pipeline. */
@@ -80,15 +170,39 @@ export function generateWorld(input: WorldInput, opts: GenerateOptions = {}): Wo
   const sidewalkPolys = s.sidewalkWidth > 0 ? envelopes(segs, sidewalkWidth, s.roadRoundness) : [];
   const curbs = s.sidewalkWidth > 0 ? unionBorders(segs, sidewalkWidth, s.roadRoundness) : [];
   mark('sidewalks', 0.6);
-  const b = generateBuildings(segs, s, rng.fork('buildings'));
+  const generated = generateBuildings(segs, s, rng.fork('buildings'));
+  // imported OSM features (J6): water polygons and footprints replace procedural buildings
+  const waterPolys = (input.features?.water ?? [])
+    .filter((w) => w.length >= 3)
+    .map((w) => new Polygon(w));
+  const fb = input.features
+    ? featureBuildings(
+        input.features,
+        segs,
+        s.roadWidth / 2 + s.sidewalkWidth,
+        waterPolys,
+        rng.fork('features'),
+      )
+    : { buildings: [], polygons: [] };
+  const fixed = [...fb.polygons, ...waterPolys];
+  const b = { buildings: [...fb.buildings], polygons: [...fb.polygons], guides: generated.guides };
+  generated.buildings.forEach((bd, i) => {
+    const poly = generated.polygons[i] as Polygon;
+    const clash = fixed.some((f) => bboxOverlap(f.bbox, poly.bbox) && polygonsIntersect(f, poly));
+    if (!clash) {
+      b.buildings.push(bd);
+      b.polygons.push(poly);
+    }
+  });
   mark('buildings', 0.85);
   const halfBand = s.roadWidth / 2 + s.sidewalkWidth;
-  const trees = generateTrees(segs, halfBand, b.polygons, s, rng.fork('trees'));
+  const trees = generateTrees(segs, halfBand, [...b.polygons, ...waterPolys], s, rng.fork('trees'));
   mark('trees', 1);
 
   let bounds: BBox = emptyBBox();
   for (const p of roadPolys) unionBBox(bounds, p.bbox);
   for (const p of b.polygons) unionBBox(bounds, p.bbox);
+  for (const p of waterPolys) unionBBox(bounds, p.bbox);
   for (const t of trees)
     unionBBox(bounds, {
       minX: t.x - t.radius,
@@ -114,6 +228,7 @@ export function generateWorld(input: WorldInput, opts: GenerateOptions = {}): Wo
     curbs,
     buildingGuides: b.guides,
     buildings: b.buildings,
+    water: waterPolys.map((p) => plain(p.points)),
     trees,
     bounds,
     timings,

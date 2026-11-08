@@ -187,6 +187,28 @@ test('3D night: bloom on rays, lamps and windows; slow frames lower the quality'
   });
 });
 
+test('3D OSM sample: imported footprints are extruded and water is drawn', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto('./');
+  await waitForApp(page);
+  await page.evaluate(() => window.__ND__.actions.loadBundled('worlds/osm-sample.world.json'));
+  await waitForGeometry(page);
+  await page.evaluate(() => window.__ND__.actions.setRenderView('3d'));
+  await expect.poll(async () => (await r3(page)).ready, { timeout: 30_000 }).toBe(true);
+  await page.evaluate(() => {
+    window.__ND__.actions.setQuality('high', false);
+    window.__ND__.actions.setTimeOfDay(0.62);
+    window.__ND__.actions.frame3d(600, 2300, 1500);
+  });
+  await page.waitForTimeout(2000);
+  const s = await r3(page);
+  expect(s.footprints ?? 0).toBeGreaterThan(5);
+  expect(s.water).toBe(1);
+  expect(await nd(page, () => window.__ND__.stats.drawCalls)).toBeLessThanOrEqual(150);
+  expect(await canvasVariance(page, '.stage-3d')).toBeGreaterThan(50);
+  await shot(page, 'osm-3d');
+});
+
 test('3D view: without WebGL the app toasts and stays in 2D', async ({ page }) => {
   await page.addInitScript(() => {
     // simulate a browser without WebGL

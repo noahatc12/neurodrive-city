@@ -13,6 +13,7 @@ import {
   settingsEqual,
   type WorldSettings,
 } from './settings.ts';
+import type { WorldFeatures } from './types.ts';
 
 export type WorldSource = 'editor' | 'osm' | 'procedural';
 
@@ -30,6 +31,7 @@ export class WorldModel {
   private _seed: number;
   meta: WorldMeta;
   private _geometryVersion = 0;
+  private _features: WorldFeatures = { buildings: [], water: [] };
 
   constructor(
     options: { seed?: number; settings?: Partial<WorldSettings>; meta?: Partial<WorldMeta> } = {},
@@ -73,6 +75,24 @@ export class WorldModel {
   }
 
   /** Sets the generation seed. */
+  /** Imported OSM buildings and water (spec J6); empty for editor worlds. */
+  get features(): Readonly<WorldFeatures> {
+    return this._features;
+  }
+
+  /** Replaces the imported features (regenerates the world). */
+  setFeatures(features: WorldFeatures): void {
+    this._features = {
+      buildings: features.buildings
+        .filter((p) => p.length >= 3)
+        .map((p) => p.map((v) => ({ x: v.x, y: v.y }))),
+      water: features.water
+        .filter((p) => p.length >= 3)
+        .map((p) => p.map((v) => ({ x: v.x, y: v.y }))),
+    };
+    this._geometryVersion++;
+  }
+
   setSeed(seed: number): void {
     const s = seed >>> 0;
     if (s === this._seed) return;

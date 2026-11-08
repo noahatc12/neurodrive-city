@@ -12,6 +12,9 @@
 import * as THREE from 'three';
 import type { WorldGeometry } from '../engine/world/world.ts';
 import { facadeTextures } from './textures.ts';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import type { BuildingData } from '../engine/world/types.ts';
+import type { Vec2 } from '../engine/math/vec2.ts';
 
 export interface BuildingMeshes {
   group: THREE.Group;
@@ -93,7 +96,9 @@ function roofGeometry(): THREE.BufferGeometry {
 export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
   const group = new THREE.Group();
   group.name = 'buildings';
-  const data = geo.data.buildings;
+  // procedural rectangles are instanced boxes; imported OSM footprints are extruded (J6)
+  const data = geo.data.buildings.filter((b) => !b.osm);
+  const osm = geo.data.buildings.filter((b) => b.osm === true);
   const n = data.length;
   const { map, emissive } = facadeTextures();
   const night = { value: 0 };
@@ -203,6 +208,8 @@ export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
   roofMesh.instanceMatrix.needsUpdate = true;
   if (roofMesh.instanceColor) roofMesh.instanceColor.needsUpdate = true;
   if (n > 0) group.add(walls);
+  const footprints = osm.length > 0 ? extrudeFootprints(osm) : null;
+  if (footprints) group.add(footprints);
   if (roofs.length > 0) group.add(roofMesh);
   return {
     group,
@@ -218,6 +225,76 @@ export function buildBuildingMeshes(geo: WorldGeometry): BuildingMeshes {
       (roofMesh.material as THREE.Material).dispose();
       walls.dispose();
       roofMesh.dispose();
+      if (footprints) {
+        footprints.geometry.dispose();
+        (footprints.material as THREE.Material).dispose();
+      }
     },
   };
+}
+
+/** Shape in the XY plane whose y is flipped, so rotateX(−π/2) maps it to (x, h, y). */
+function flatShape(ring: readonly Vec2[]): THREE.Shape {
+  const shape = new THREE.Shape();
+  ring.forEach((p, i) => (i === 0 ? shape.moveTo(p.x, -p.y) : shape.lineTo(p.x, -p.y)));
+  shape.closePath();
+  return shape;
+}
+
+/** Imported OSM footprints: every polygon extruded to its height, merged into one mesh. */
+function extrudeFootprints(list: readonly BuildingData[]): THREE.Mesh | null {
+  const parts: THREE.BufferGeometry[] = [];
+  const col = new THREE.Color();
+  for (const b of list) {
+    const g = new THREE.ExtrudeGeometry(flatShape(b.base), {
+      depth: b.height,
+      bevelEnabled: false,
+    });
+    g.rotateX(-Math.PI / 2);
+    const count = g.getAttribute('position').count;
+    const colors = new Float32Array(count * 3);
+    col.setHSL(0.58 + (b.tint - 0.5) * 0.06, 0.1 + b.tint * 0.08, 0.6 + b.tint * 0.15);
+    for (let i = 0; i < count; i++) {
+      colors[i * 3] = col.r;
+      colors[i * 3 + 1] = col.g;
+      colors[i * 3 + 2] = col.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    parts.push(g);
+  }
+  const merged = mergeGeometries(parts, false);
+  for (const g of parts) g.dispose();
+  if (!merged) return null;
+  const mesh = new THREE.Mesh(
+    merged,
+    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.05 }),
+  );
+  mesh.name = 'osmBuildings';
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+/** Water polygons (J6) as one flat, glossy mesh just above the ground. */
+export function buildWaterMesh(water: readonly (readonly Vec2[])[]): THREE.Mesh | null {
+  if (water.length === 0) return null;
+  const parts = water.map((ring) => new THREE.ShapeGeometry(flatShape(ring)).rotateX(-Math.PI / 2));
+  const merged = mergeGeometries(parts, false);
+  for (const g of parts) g.dispose();
+  if (!merged) return null;
+  merged.translate(0, 0.35, 0);
+  const mesh = new THREE.Mesh(
+    merged,
+    new THREE.MeshStandardMaterial({
+      color: '#1f5a80',
+      roughness: 0.12,
+      metalness: 0.25,
+      polygonOffset: true,
+      polygonOffsetFactor: -0.5,
+      polygonOffsetUnits: -0.5,
+    }),
+  );
+  mesh.name = 'water';
+  mesh.receiveShadow = true;
+  return mesh;
 }

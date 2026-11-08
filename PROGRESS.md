@@ -15,11 +15,11 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | done        |
 | 7     | 3D renderer foundation                                             | done        |
 | 8     | 3D polish, pre-trained brain, turbo worker                         | done        |
-| 9     | Stretch, accessibility, UX polish                                  | pending     |
+| 9     | Stretch, accessibility, UX polish                                  | done        |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 9, stretch and polish (AI navigation mode F5, OSM buildings and water J6,
-onboarding tour, accessibility, responsive layout, split `trainingPanel.ts`).
+**Next:** Phase 10, docs and final audit (README, COMPARISON.md, docs/media, Definition of Done
+audit, tag v1.0.0).
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -308,11 +308,61 @@ final Definition of Done audit. Tag `v1.0.0`.
   replaced with a sine-free hash); glow toned down; night lacked light sources at street level
   (street lights added).
 
+### Phase 9 (2026-11-07)
+
+- `npm run verify`: typecheck 0, lint 0, 27 test files / 240 tests, build OK, e2e 23 passed.
+- Build: initial chunk 246.48 kB (gzip 79.77 kB); lazy 3D chunk 681.41 kB (gzip 173.89 kB).
+- OSM buildings and water (J6): footprints are stored in the world file's `features`, replace
+  procedural buildings, are solid for cars, render as N-gon pseudo-3D blocks in 2D and extruded
+  walls in 3D; water is a 2D layer and a glossy 3D mesh, and keeps buildings and trees out. The
+  bundled sample town now carries 32 footprints and a river (9.7 KB file). Tests:
+  `world/OSM features (J6)` (4 tests: replacement and exclusion, determinism and version bump,
+  save/load round trip with validation, the bundled sample), e2e `3D OSM sample` (footprints > 5,
+  one water mesh, draw calls under 150).
+- AI navigation (F5): a Train-mode toggle in city worlds adds the waypoint-angle and speed inputs
+  (topology [7, 6, 4]); nav brains import and export with their input names. Headless results in
+  Grid Town (`node scripts/train-nav.ts`): step activation 28% of the route with and without route
+  inputs (200 cars, 40 generations); tanh 7% without and 24% with route inputs (400 cars, 80
+  generations). Nothing passes the first corner, so route following stays the default demo
+  (documented in the README; curriculum training in BACKLOG).
+- Onboarding: a 4-step coach-mark tour (toolbar, mode switch, 2D/3D toggle, world menu), keyboard
+  driven (Enter or arrow keys, Esc skips), stored in localStorage, replayable from Help.
+- Accessibility and UX: automated check that every visible control has an accessible name;
+  keyboard focus shows a ring; 1280×720 layout has no overlapping panels and no horizontal scroll
+  in Edit and Simulate; reduced motion shortens transitions and camera blends (and removes speed
+  lines, wind sway and the FOV kick); uncaught errors show the error overlay with Copy details.
+  `trainingPanel.ts` split out of `nnPanel.ts`.
+- Bugs found by the new specs and screenshots: training controls showed in Simulate mode (the
+  `hidden` attribute lost to a CSS `display` rule; fixed globally); `#app` was a live region (every
+  HUD change would be announced); faint text was 3.3:1 (now 5.1:1).
+- Screenshots: `phase-9-tour.png` (step 1 of 4 ringing the toolbar, card with Skip, Back, Next);
+  `phase-9-layout-1280x720.png` (Simulate in Grid Town at 1280×720: HUD, minimap, network panel
+  without training controls, nothing overlapping); `phase-9-osm-import.png` (the sample town in 2D
+  with imported footprints along the streets and the blue river crossed by bridges);
+  `phase-9-osm-3d.png` (aerial 3D view over the river: water, bridges, extruded footprints next to
+  procedural buildings, trees kept out of the water).
+
+#### Manual checklist (Lighthouse-style)
+
+| Area | Check | Result |
+| ---- | ----- | ------ |
+| Accessibility | Every visible button, input and select has an accessible name | Pass (automated in `a11y.spec.ts`) |
+| Accessibility | Keyboard: Tab reaches the controls, focus ring visible, Esc closes dialogs and the tour | Pass (the World menu gains Esc and arrow keys in Phase 10) |
+| Accessibility | Dialogs use `role="dialog"` or `alertdialog` with `aria-modal` and a label; toasts are a polite live region; canvases are `role="img"` with labels | Pass |
+| Accessibility | Contrast: text 15.0:1, dim text 6.8:1, faint text 5.1:1, cyan accent 9.8:1 on panels | Pass (WCAG AA) |
+| Accessibility | `prefers-reduced-motion`: shorter transitions, camera blends a third as long, no speed lines, FOV kick or wind sway | Pass (automated check for the flag and transition time) |
+| Best practices | Zero console errors and page errors in every e2e spec | Pass (shared fixture) |
+| Best practices | No external requests: no CDNs, fonts, textures or models; Three.js is the only runtime dependency | Pass |
+| Best practices | Uncaught errors show an overlay with Copy details instead of a frozen canvas | Pass (automated) |
+| Performance | Initial JS under 200 KB gzip; Three.js loaded on demand | Pass (about 78 KB) |
+| Performance | 3D draw calls under 150 in the demo city | Pass (77 by day, 65 at night) |
+| SEO and metadata | `lang`, viewport, description, colour scheme, title, favicon, `noscript` | Pass |
+| Responsive | 1280×720 without overlap or horizontal scroll; top bar collapses to icons under 1100 px; panels collapse | Pass (automated at 1280×720) |
+| Responsive | Touch: one-finger pan and pinch zoom in 2D | Pass (implemented in Phase 2; best effort on phones) |
+
 ## Known issues
 
-- Training controls live inside `ui/panels/nnPanel.ts`; the spec's file list names a separate
-  `trainingPanel.ts` (to be split out during Phase 9 polish).
 - The bundled brain is a highway weaver (rays only); in city worlds the Simulate demo car still
-  crashes at corners. City navigation is the F5 stretch (Phase 9).
+  crashes at corners. AI navigation (F5) exists but does not yet learn turns (documented).
 - A few windows still show a fine speckle in software rendering (SwiftShader texture filtering of
   the emissive mask); not seen in the hardware renderer.

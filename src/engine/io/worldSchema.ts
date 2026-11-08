@@ -50,6 +50,8 @@ export interface WorldFile {
   graph: { points: Tuple2[]; segments: SegmentRecord[] };
   markings: MarkingRecord[];
   view?: { zoom: number; offset: Tuple2 };
+  /** Imported OSM building footprints and water polygons (spec J6). */
+  features?: { buildings: Tuple2[][]; water: Tuple2[][] };
 }
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -141,6 +143,15 @@ export function validateWorld(input: unknown): ValidationResult<WorldFile> {
         }
       }
     });
+  }
+
+  if (input.features !== undefined) {
+    const f = input.features;
+    const rings = (v: unknown): boolean =>
+      Array.isArray(v) && v.every((r) => Array.isArray(r) && r.length >= 3 && r.every(isTuple2));
+    if (!isObject(f) || !rings(f.buildings) || !rings(f.water)) {
+      err('features: expected { buildings: [[x, y], ...][], water: [[x, y], ...][] }');
+    }
   }
 
   if (input.view !== undefined) {

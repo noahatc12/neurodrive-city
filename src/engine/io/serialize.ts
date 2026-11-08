@@ -58,6 +58,12 @@ export function serializeWorld(model: WorldModel, view?: WorldView): WorldFile {
     markings: serializeMarkings(model),
   };
   if (view) file.view = { zoom: view.zoom, offset: [r3(view.offset[0]), r3(view.offset[1])] };
+  const f = model.features;
+  if (f.buildings.length > 0 || f.water.length > 0) {
+    const ring = (r: readonly { x: number; y: number }[]): Tuple2[] =>
+      r.map((p) => [r3(p.x), r3(p.y)]);
+    file.features = { buildings: f.buildings.map(ring), water: f.water.map(ring) };
+  }
   return file;
 }
 
@@ -104,6 +110,13 @@ export function parseWorld(json: unknown): ValidationResult<LoadedWorld> {
     if (!loadMarking(model, rec, segByIndex))
       warnings.push(`markings[${i}] skipped (no road nearby)`);
   });
+  if (file.features) {
+    const ring = (r: Tuple2[]): { x: number; y: number }[] => r.map(([x, y]) => ({ x, y }));
+    model.setFeatures({
+      buildings: file.features.buildings.map(ring),
+      water: file.features.water.map(ring),
+    });
+  }
   return { ok: true, value: { model, view: file.view ?? null, file, warnings } };
 }
 

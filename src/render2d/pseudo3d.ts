@@ -192,9 +192,10 @@ export class Pseudo3D {
         const oy = -LIGHT_Y * off;
         // swept footprint: base ∪ shifted base ∪ connecting quads (one path, nonzero fill)
         const p = b.base;
-        for (let i = 0; i < 4; i++) {
+        const n = p.length;
+        for (let i = 0; i < n; i++) {
           const a = p[i] as { x: number; y: number };
-          const c = p[(i + 1) % 4] as { x: number; y: number };
+          const c = p[(i + 1) % n] as { x: number; y: number };
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(c.x, c.y);
           ctx.lineTo(c.x + ox, c.y + oy);
@@ -247,25 +248,28 @@ export class Pseudo3D {
     const pal = this.palette;
     if (!b || !pal) return;
     const p = b.base;
+    const n = p.length;
     const h = b.height;
     // orientation of the footprint (sign of area) to get outward normals
     let area = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < n; i++) {
       const a = p[i] as { x: number; y: number };
-      const c = p[(i + 1) % 4] as { x: number; y: number };
+      const c = p[(i + 1) % n] as { x: number; y: number };
       area += a.x * c.y - c.x * a.y;
     }
     const sgn = area >= 0 ? 1 : -1;
+    // OSM footprints can have many corners: grow the scratch buffer once when needed
+    if (this.tops.length < n * 2) this.tops = new Float64Array(n * 2);
     const tops = this.tops;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < n; i++) {
       const a = p[i] as { x: number; y: number };
       const t = this.top(a.x, a.y, h);
       tops[i * 2] = t.x;
       tops[i * 2 + 1] = t.y;
     }
     // sides facing the viewer
-    for (let i = 0; i < 4; i++) {
-      const j = (i + 1) % 4;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
       const a = p[i] as { x: number; y: number };
       const c = p[j] as { x: number; y: number };
       const ex = c.x - a.x;
@@ -287,7 +291,7 @@ export class Pseudo3D {
       ctx.closePath();
       ctx.fill();
     }
-    if (b.roof === 'pitched') {
+    if (b.roof === 'pitched' && n === 4) {
       this.drawPitchedRoof(ctx, b, id, pal);
       return;
     }
@@ -295,7 +299,7 @@ export class Pseudo3D {
     ctx.fillStyle = pal.top[id] ?? PALETTE.buildingTop;
     ctx.beginPath();
     ctx.moveTo(tops[0] as number, tops[1] as number);
-    for (let i = 1; i < 4; i++) ctx.lineTo(tops[i * 2] as number, tops[i * 2 + 1] as number);
+    for (let i = 1; i < n; i++) ctx.lineTo(tops[i * 2] as number, tops[i * 2 + 1] as number);
     ctx.closePath();
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.07)';
@@ -303,7 +307,7 @@ export class Pseudo3D {
     ctx.stroke();
   }
 
-  private readonly tops = new Float64Array(8);
+  private tops = new Float64Array(64);
   private readonly ridge = new Float64Array(4);
 
   private drawPitchedRoof(

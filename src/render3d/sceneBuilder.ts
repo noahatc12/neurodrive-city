@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import type { LayerFlags } from '../app/renderer.ts';
 import type { WorldGeometry } from '../engine/world/world.ts';
 import type { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
-import { buildBuildingMeshes, type BuildingMeshes } from './buildingsMesh.ts';
+import { buildBuildingMeshes, buildWaterMesh, type BuildingMeshes } from './buildingsMesh.ts';
 import { buildRoadMeshes, Y_MARK, Y_ROAD, type RoadMeshes } from './roadsMesh.ts';
 import { asphaltTexture, groundTexture } from './textures.ts';
 import { buildTreeMeshes, type TreeMeshes } from './treesMesh.ts';
@@ -24,6 +24,8 @@ export interface WorldMeshes {
   readonly buildings: BuildingMeshes;
   readonly trees: TreeMeshes;
   readonly streetLights: StreetLights;
+  /** Imported OSM footprints and water polygons in this scene (J6). */
+  readonly features: { footprints: number; water: number };
   /** Geometry version and road width the scene was built for. */
   readonly version: number;
   readonly roadWidth: number;
@@ -47,6 +49,8 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
   const trees = buildTreeMeshes(geo);
   const streetLights = buildStreetLights(geo, roadWidth);
   group.add(roads.group, buildings.group, trees.group, streetLights.group);
+  const water = buildWaterMesh(geo.data.water ?? []);
+  if (water) group.add(water);
   const b = geo.data.bounds;
   const finite = Number.isFinite(b.minX) && b.maxX > b.minX;
   const cx = finite ? (b.minX + b.maxX) / 2 : 0;
@@ -59,6 +63,10 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
     buildings,
     trees,
     streetLights,
+    features: {
+      footprints: geo.data.buildings.filter((b) => b.osm).length,
+      water: geo.data.water.length,
+    },
     version: geo.version,
     roadWidth,
     buildMs: performance.now() - t0,
@@ -82,6 +90,10 @@ export function buildWorldMeshes(geo: WorldGeometry, roadWidth: number): WorldMe
       buildings.dispose();
       trees.dispose();
       streetLights.dispose();
+      if (water) {
+        water.geometry.dispose();
+        (water.material as THREE.Material).dispose();
+      }
     },
   };
 }

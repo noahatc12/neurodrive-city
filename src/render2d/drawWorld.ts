@@ -39,6 +39,12 @@ export function drawStaticLayers(
   layers: Readonly<LayerFlags>,
   roadWidth: number,
 ): void {
+  // water first (rivers pass under bridges)
+  ctx.fillStyle = PALETTE.water;
+  ctx.fill(paths.water);
+  ctx.strokeStyle = PALETTE.waterEdge;
+  ctx.lineWidth = roadWidth * 0.04;
+  ctx.stroke(paths.water);
   if (layers.sidewalks) {
     ctx.fillStyle = PALETTE.sidewalk;
     ctx.fill(paths.sidewalks);

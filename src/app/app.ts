@@ -35,7 +35,12 @@ import { activeTarget } from '../engine/markings/target.ts';
 import type { LanePath } from '../engine/nav/lanePath.ts';
 import { Hud } from '../ui/hud.ts';
 import { NnPanel } from '../ui/panels/nnPanel.ts';
-import { Population, type GenerationRecord, type Selection } from '../engine/ai/evolution.ts';
+import {
+  NAV_INPUTS,
+  Population,
+  type GenerationRecord,
+  type Selection,
+} from '../engine/ai/evolution.ts';
 import type { NeuralNetwork } from '../engine/ai/network.ts';
 import { brainFits, inputNames, parseBrain, serializeBrain } from '../engine/ai/brainSchema.ts';
 import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
@@ -45,6 +50,7 @@ import { Sensor } from '../engine/car/sensor.ts';
 import type { ThreeRenderer } from '../render3d/threeRenderer.ts';
 import type { TrainerRequest, TrainerResponse } from '../workers/protocol.ts';
 import { CameraChips, nextCameraMode } from '../ui/cameraChips.ts';
+import { Tour, tourDone } from '../ui/tour.ts';
 import {
   SettingsPanel,
   type QualityLevel,
@@ -115,6 +121,7 @@ export class App {
   private readonly worldPanel: WorldPanel;
   private readonly statusbar: Statusbar;
   private readonly help: HelpOverlay;
+  readonly tour: Tour;
   readonly worldManager: WorldManager;
   readonly minimap = new Minimap();
   readonly progress = new ProgressOverlay();
@@ -146,6 +153,8 @@ export class App {
     selection: 'course' as Selection,
     timeLimit: 60,
     stuckTimeout: 5,
+    /** AI navigation mode (F5): route inputs in city training. */
+    nav: false,
   };
   savedBrain: NeuralNetwork | null = null;
   pretrained: NeuralNetwork | null = null;
@@ -270,6 +279,15 @@ export class App {
       },
       onTurbo: (on) => (on ? this.startTurbo() : this.stopTurbo(true)),
       onCurvy: (on) => this.enterInfinite(on),
+      onNav: (on) => {
+        this.evo.nav = on;
+        this.simGen++;
+        this.toast(
+          on
+            ? 'AI navigation: the network also sees the angle to the next route waypoint and its speed'
+            : 'AI navigation off: sensors only',
+        );
+      },
       onSave: () => this.saveBestBrain(),
       onDiscard: () => this.discardBrain(),
       onNextGen: () => {
@@ -298,7 +316,29 @@ export class App {
       onRedo: () => this.redo(),
       onGrid: () => this.toggleGrid(),
     });
-    this.help = new HelpOverlay();
+    this.help = new HelpOverlay(() => this.tour.start());
+    this.tour = new Tour([
+      {
+        target: () => this.toolbar.el,
+        title: 'Build your city',
+        body: 'Pick a tool, then click to add road points and drag to move them. The marking tools place stop and yield signs, crossings, parking, traffic lights, a start and a target.',
+      },
+      {
+        target: () => this.topbar.mode.el,
+        title: 'Drive, then train',
+        body: 'Simulate puts your car (arrow keys or WASD) into traffic. Train evolves hundreds of AI drivers whose neural network you can watch live on the right.',
+      },
+      {
+        target: () => this.topbar.view.el,
+        title: 'See it in 3D',
+        body: 'V switches to the 3D city. C cycles the camera, L toggles day and night, and clicking a car follows it.',
+      },
+      {
+        target: () => this.root.querySelector('.menu-wrap'),
+        title: 'Worlds and help',
+        body: 'The World menu loads the demo city, a sample OSM town and the infinite road, and saves or opens world files. Press ? for every shortcut.',
+      },
+    ]);
     this.cameraChips = new CameraChips((m) => this.setCameraMode(m));
     this.cameraChips.set(this.cameraMode);
     this.viewSettings = new SettingsPanel({
@@ -356,6 +396,7 @@ export class App {
         this.nnPanel.el,
         this.progress.el,
         this.help.el,
+        this.tour.el,
         this.fileInput,
       ),
     );
@@ -449,6 +490,7 @@ export class App {
     this.history.onChange(() => this.scheduleAutosave());
     this.loop.start();
     this.ready = true;
+    if (!tourDone()) window.setTimeout(() => this.tour.start(), 600);
     this.exposeDebugHooks();
   }
 
@@ -597,8 +639,19 @@ export class App {
   }
 
   /** The brain used to seed a population: saved brain, else the bundled pre-trained one. */
+  /** Whether the population being built uses the AI navigation inputs (F5). */
+  private get navActive(): boolean {
+    return this.evo.nav && this.mode === 'train' && !this.infinite;
+  }
+
+  /** Input names for a brain (rays, plus the navigation inputs when it has them). */
+  private brainInputs(net: NeuralNetwork): string[] {
+    const rays = new Sensor().rayCount;
+    return inputNames(rays, (net.topology[0] ?? rays) > rays ? NAV_INPUTS : []);
+  }
+
   private seedBrain(): NeuralNetwork | null {
-    const inputs = new Sensor().rayCount;
+    const inputs = new Sensor().rayCount + (this.navActive ? NAV_INPUTS.length : 0);
     if (this.turboBrain && brainFits(this.turboBrain, inputs)) return this.turboBrain;
     if (this.savedBrain && brainFits(this.savedBrain, inputs)) return this.savedBrain;
     if (this.pretrained && brainFits(this.pretrained, inputs)) return this.pretrained;
@@ -614,6 +667,7 @@ export class App {
       timeLimit: this.evo.timeLimit,
       stuckTimeout: this.evo.stuckTimeout,
       seed: 1 + this.simGen,
+      navInputs: this.navActive,
     };
     this.renderer2d.skidDecal.clear();
     this.simRoute = null;
@@ -757,6 +811,7 @@ export class App {
       this.evo.selection,
       this.infinite?.curvy ?? false,
       this.turbo !== null,
+      this.evo.nav,
     );
     this.nnPanel.setSpeed(this.loop.speed);
     this.nnPanel.setBrainNote(this.brainNote());
@@ -808,9 +863,10 @@ export class App {
         timeLimit: this.evo.timeLimit,
         stuckTimeout: this.evo.stuckTimeout,
         seed: 1 + this.simGen,
+        navInputs: this.navActive,
       },
       seedBrain: seedNet
-        ? serializeBrain(seedNet, inputNames(new Sensor().rayCount), {
+        ? serializeBrain(seedNet, this.brainInputs(seedNet), {
             generations: this.population?.generation ?? 0,
             bestFitness: this.population?.bestEverFitness ?? 0,
             world: 'seed',
@@ -933,7 +989,7 @@ export class App {
       this.toast('Start training (T) to save a brain');
       return;
     }
-    const file = serializeBrain(pop.bestEver, inputNames(new Sensor().rayCount), {
+    const file = serializeBrain(pop.bestEver, this.brainInputs(pop.bestEver), {
       generations: pop.generation,
       bestFitness: Math.round(pop.bestEverFitness),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
@@ -989,7 +1045,7 @@ export class App {
       this.toast('No brain to export yet');
       return;
     }
-    const file = serializeBrain(net, inputNames(new Sensor().rayCount), {
+    const file = serializeBrain(net, this.brainInputs(net), {
       generations: pop?.generation ?? 0,
       bestFitness: Math.round(pop?.bestEverFitness ?? 0),
       world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
@@ -1020,13 +1076,16 @@ export class App {
       return;
     }
     const inputs = new Sensor().rayCount;
-    if (!brainFits(res.net, inputs)) {
+    const navBrain = brainFits(res.net, inputs + NAV_INPUTS.length);
+    if (!brainFits(res.net, inputs) && !navBrain) {
       this.toast(
-        `Brain topology [${res.net.topology.join(', ')}] does not match the current sensors (${inputs} inputs, 4 outputs); not applied`,
+        `Brain topology [${res.net.topology.join(', ')}] does not match the current sensors (${inputs} inputs, or ${inputs + NAV_INPUTS.length} with route inputs, and 4 outputs); not applied`,
         { kind: 'error' },
       );
       return;
     }
+    // a brain with route inputs switches the AI navigation mode on (F5)
+    this.evo.nav = navBrain;
     localStorage.setItem(BRAIN_KEY, JSON.stringify(res.file));
     this.savedBrain = res.net;
     this.simGen++;
@@ -2005,6 +2064,8 @@ export class App {
       },
       mode: () => this.mode,
       view: () => this.view,
+      reducedMotion: () => this.reducedMotion,
+      tour: () => ({ active: this.tour.active, step: this.tour.step }),
       render3d: () => {
         const r = this.renderer3d;
         return r ? { loaded: true, ready: r.ready, ...r.stats() } : { loaded: false, ready: false };

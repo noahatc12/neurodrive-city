@@ -11,7 +11,7 @@ export class HelpOverlay {
   private visible = false;
   private lastFocus: Element | null = null;
 
-  constructor() {
+  constructor(onTour?: () => void) {
     const groups = new Map<ShortcutDoc['group'], ShortcutDoc[]>();
     for (const d of SHORTCUT_DOCS) {
       const list = groups.get(d.group) ?? [];
@@ -54,6 +54,21 @@ export class HelpOverlay {
         ),
       ),
       cols,
+      onTour
+        ? h(
+            'div',
+            { class: 'help-foot' },
+            h('button', {
+              class: 'btn btn-small',
+              type: 'button',
+              text: 'Replay the tour',
+              onclick: () => {
+                this.hide();
+                onTour();
+              },
+            }),
+          )
+        : null,
     );
     this.el = h('div', { class: 'overlay help-overlay', aria: { hidden: 'true' } }, dialog);
     this.el.addEventListener('click', (e) => {

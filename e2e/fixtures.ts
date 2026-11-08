@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Bump at the start of each phase so screenshots are archived per phase. */
-export const CURRENT_PHASE = 8;
+export const CURRENT_PHASE = 9;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SHOT_DIR = join(here, '__screenshots__');
@@ -16,6 +16,11 @@ const SHOT_DIR = join(here, '__screenshots__');
 export const test = base.extend<{ errors: string[] }>({
   errors: [
     async ({ page }, use) => {
+      // the first-run tour is covered by its own spec (opened with ?tour); everywhere else
+      // it would sit on top of the controls the specs click
+      await page.addInitScript(() => {
+        if (!location.search.includes('tour')) localStorage.setItem('nd:tour', 'done');
+      });
       const errors: string[] = [];
       page.on('console', (msg) => {
         if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`);

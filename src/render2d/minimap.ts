@@ -236,7 +236,17 @@ export class Minimap {
         const p0 = p[0];
         if (!p0) continue;
         c.moveTo(p0.x, p0.y);
-        for (let i = 1; i < 4; i++) c.lineTo((p[i] as Vec2).x, (p[i] as Vec2).y);
+        for (let i = 1; i < p.length; i++) c.lineTo((p[i] as Vec2).x, (p[i] as Vec2).y);
+        c.closePath();
+      }
+      c.fill();
+      c.fillStyle = 'rgba(47, 111, 147, 0.75)';
+      c.beginPath();
+      for (const w of geo.data.water ?? []) {
+        const w0 = w[0];
+        if (!w0) continue;
+        c.moveTo(w0.x, w0.y);
+        for (let i = 1; i < w.length; i++) c.lineTo((w[i] as Vec2).x, (w[i] as Vec2).y);
         c.closePath();
       }
       c.fill();

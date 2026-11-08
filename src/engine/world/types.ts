@@ -10,6 +10,14 @@ import type { Vec2 } from '../math/vec2.ts';
 import type { WorldSettings } from './settings.ts';
 
 /** Input snapshot of a world model (graph + settings + seed). */
+/** Fixed map features imported from OSM (spec J6), in world coordinates. */
+export interface WorldFeatures {
+  /** Building footprints (closed rings without the repeated first point). */
+  buildings: Vec2[][];
+  /** Water polygons (rivers, lakes). */
+  water: Vec2[][];
+}
+
 export interface WorldInput {
   /** The model's geometry version this input was taken at. */
   version: number;
@@ -24,6 +32,8 @@ export interface WorldInput {
   }[];
   settings: WorldSettings;
   seed: number;
+  /** Imported OSM buildings and water (absent for editor and procedural worlds). */
+  features?: WorldFeatures;
 }
 
 export type RoofKind = 'flat' | 'pitched';
@@ -42,6 +52,8 @@ export interface BuildingData {
   tint: number;
   /** Seed for per-building details (lit windows at night). */
   detailSeed: number;
+  /** True for an imported OSM footprint (any polygon; extruded rather than a box). */
+  osm?: true;
 }
 
 export type TreeSpecies = 0 | 1 | 2; // 0 broadleaf, 1 conifer, 2 bush
@@ -94,6 +106,8 @@ export interface WorldGeometryData {
   /** Building guide border (debug layer). */
   buildingGuides: Seg[];
   buildings: BuildingData[];
+  /** Water polygons (from OSM features). */
+  water: Vec2[][];
   trees: TreeData[];
   bounds: BBox;
   /** Milliseconds per stage when a clock was provided. */

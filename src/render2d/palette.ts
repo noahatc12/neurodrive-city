@@ -1,5 +1,7 @@
 /** Colours shared by the 2D renderer, minimap and visualizer (night-tech theme). */
 export const PALETTE = {
+  water: '#123a52',
+  waterEdge: '#2f6f93',
   bg: '#0b0f17',
   ground: '#0e1420',
   grid: 'rgba(34, 211, 238, 0.06)',

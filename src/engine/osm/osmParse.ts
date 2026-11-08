@@ -269,6 +269,8 @@ export function* importOsmSteps(
   // drop isolated points left by skipped or degenerate segments
   for (const p of g.points) if (g.degree(p) === 0) g.removePoint(p);
   if (g.segmentCount === 0) warnings.push('No drivable roads found in this data.');
+  // fixed footprints and water become part of the world (regenerated with it, J6)
+  model.setFeatures({ buildings, water });
   return { model, stats, buildings, water, warnings };
 }
 

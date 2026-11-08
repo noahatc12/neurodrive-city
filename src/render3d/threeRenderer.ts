@@ -67,6 +67,8 @@ export interface ThreeStats {
   rays: number;
   markings: number;
   avgFrameMs: number;
+  footprints: number;
+  water: number;
 }
 
 /** Seconds for one full day in auto-cycle mode. */
@@ -332,6 +334,8 @@ export class ThreeRenderer implements Renderer {
       rays: this.sensors.rayCount,
       markings: this.markings.count,
       avgFrameMs: this.governor.avgMs,
+      footprints: this.world?.features.footprints ?? 0,
+      water: this.world?.features.water ?? 0,
     };
   }
 

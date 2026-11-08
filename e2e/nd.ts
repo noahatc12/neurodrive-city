@@ -54,6 +54,8 @@ export interface NDHooks {
     rays?: number;
     markings?: number;
     avgFrameMs?: number;
+    footprints?: number;
+    water?: number;
   };
   sim: { stepCount: number; carCount: number; carPositions: number[][] } | null;
   viewport: { zoom: number; center: { x: number; y: number } };
