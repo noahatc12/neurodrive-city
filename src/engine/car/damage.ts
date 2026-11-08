@@ -145,6 +145,17 @@ export class CollisionWorld {
     }
     for (let i = 0; i < this.extraCount; i++) {
       const e = this.extra;
+      const ax = e[i * 4] as number;
+      const ay = e[i * 4 + 1] as number;
+      const bx = e[i * 4 + 2] as number;
+      const by = e[i * 4 + 3] as number;
+      if (
+        Math.min(ax, bx) > maxX ||
+        Math.max(ax, bx) < minX ||
+        Math.min(ay, by) > maxY ||
+        Math.max(ay, by) < minY
+      )
+        continue;
       if (
         this.polyTouchesSeg(
           poly,
@@ -261,6 +272,17 @@ export class CollisionWorld {
     }
     const e = this.extra;
     for (let i = 0; i < this.extraCount; i++) {
+      const ax = e[i * 4] as number;
+      const ay = e[i * 4 + 1] as number;
+      const bx = e[i * 4 + 2] as number;
+      const by = e[i * 4 + 3] as number;
+      if (
+        Math.min(ax, bx) > maxX ||
+        Math.max(ax, bx) < minX ||
+        Math.min(ay, by) > maxY ||
+        Math.max(ay, by) < minY
+      )
+        continue;
       const t = raySegmentOffset(
         ox,
         oy,

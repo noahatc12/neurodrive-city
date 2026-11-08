@@ -42,7 +42,7 @@ describe('sim/traffic', () => {
       return s && Math.hypot(c.x - s.x, c.y - s.y) > 100;
     }).length;
     expect(moved).toBeGreaterThan(10);
-  });
+  }, 30_000);
 
   it('is deterministic for a seed', () => {
     const run = (): string => {

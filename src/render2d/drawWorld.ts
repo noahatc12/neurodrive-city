@@ -153,3 +153,51 @@ export function drawGraphPreview(
   ctx.stroke();
   ctx.restore();
 }
+
+/** Shape of the infinite road the renderer needs (kept structural to avoid an import cycle). */
+export interface InfiniteRoadView {
+  readonly roadWidth: number;
+  readonly config: { readonly lanes: number; readonly laneWidth: number };
+  centerX(y: number): number;
+}
+
+/** Draws the infinite road (spec G7) for the visible window: verge, asphalt, edges, lane dashes. */
+export function drawInfiniteRoad(
+  ctx: CanvasRenderingContext2D,
+  vp: Viewport,
+  road: InfiniteRoadView,
+): void {
+  const b = vp.visibleBounds(60);
+  const step = 30;
+  const y0 = Math.ceil(b.maxY / step) * step;
+  const half = road.roadWidth / 2;
+  // verge
+  ctx.fillStyle = '#0f1a14';
+  ctx.beginPath();
+  for (let y = y0; y >= b.minY - step; y -= step) ctx.lineTo(road.centerX(y) - half - 40, y);
+  for (let y = b.minY - step; y <= y0; y += step) ctx.lineTo(road.centerX(y) + half + 40, y);
+  ctx.closePath();
+  ctx.fill();
+  // asphalt
+  ctx.fillStyle = PALETTE.asphalt;
+  ctx.beginPath();
+  for (let y = y0; y >= b.minY - step; y -= step) ctx.lineTo(road.centerX(y) - half, y);
+  for (let y = b.minY - step; y <= y0; y += step) ctx.lineTo(road.centerX(y) + half, y);
+  ctx.closePath();
+  ctx.fill();
+  // solid edges and dashed lane dividers
+  const lanes = road.config.lanes;
+  for (let k = 0; k <= lanes; k++) {
+    const off = -half + k * road.config.laneWidth;
+    const edge = k === 0 || k === lanes;
+    ctx.save();
+    ctx.strokeStyle = edge ? PALETTE.edgeLine : PALETTE.laneLine;
+    ctx.lineWidth = edge ? 3 : 2.5;
+    if (!edge) ctx.setLineDash([24, 26]);
+    ctx.beginPath();
+    for (let y = y0; y >= b.minY - step; y -= step)
+      ctx.lineTo(road.centerX(y) + off * (edge ? 0.97 : 1), y);
+    ctx.stroke();
+    ctx.restore();
+  }
+}

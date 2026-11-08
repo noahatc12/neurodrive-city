@@ -22,7 +22,9 @@ import { MarkingPainter } from './drawMarkings.ts';
 import { CarPainter, type CarDrawOptions } from './drawCars.ts';
 import { SkidDecal } from './skidDecal.ts';
 import { KIND_CAR } from './pseudo3d.ts';
-import type { Simulation } from '../engine/sim/simulation.ts';
+import type { SimHost } from '../engine/sim/host.ts';
+import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
+import { drawInfiniteRoad } from './drawWorld.ts';
 import {
   drawBackground,
   drawDebugLayers,
@@ -44,7 +46,7 @@ export class Canvas2DRenderer implements Renderer {
   readonly markingPainter = new MarkingPainter();
   readonly carPainter = new CarPainter();
   readonly skidDecal = new SkidDecal();
-  private curSim: Simulation | null = null;
+  private curSim: SimHost | null = null;
   private readonly carOpts: CarDrawOptions = {
     alpha: 1,
     timeMs: 0,
@@ -147,7 +149,11 @@ export class Canvas2DRenderer implements Renderer {
       this.drawCalls++;
     }
 
-    if (geo) {
+    const infinite = frame.sim instanceof InfiniteRoadSim ? frame.sim : null;
+    if (infinite) {
+      drawInfiniteRoad(ctx, vp, infinite);
+      this.drawCalls += 3;
+    } else if (geo) {
       const paths = this.pathsFor(geo, roadWidth);
       this.curPaths = paths;
       this.curLayers = layers;
@@ -160,6 +166,7 @@ export class Canvas2DRenderer implements Renderer {
       drawGraphPreview(ctx, vp, frame.model.graph, roadWidth);
       this.drawCalls += 2;
     }
+    const world = infinite ? null : geo;
     if (frame.geometryStale && frame.previewSegmentIds && frame.previewSegmentIds.size > 0) {
       drawGraphPreview(ctx, vp, frame.model.graph, roadWidth, frame.previewSegmentIds, true);
       this.drawCalls += 3;
@@ -167,8 +174,8 @@ export class Canvas2DRenderer implements Renderer {
 
     const sim = frame.sim;
     this.curSim = sim;
-    if (sim && geo) {
-      this.skidDecal.ensure(geo.data.bounds, `${geo.version}|${sim.config.seed}`);
+    if (sim && world) {
+      this.skidDecal.ensure(world.data.bounds, `${world.version}`);
       this.skidDecal.update(sim.skids, frame.dtMs);
       this.skidDecal.draw(ctx, vp.visibleBounds());
       this.drawCalls++;
@@ -176,7 +183,7 @@ export class Canvas2DRenderer implements Renderer {
 
     // pseudo-3D objects (buildings, trees and cars in one depth sort)
     this.pseudo3d.setCamera(vp, frame.reducedMotion ? 0.8 : 1);
-    this.pseudo3d.begin(geo, vp, layers.buildings, layers.trees);
+    this.pseudo3d.begin(world, vp, layers.buildings, layers.trees);
     if (sim) {
       const o = this.carOpts;
       o.alpha = frame.alpha;
@@ -194,11 +201,11 @@ export class Canvas2DRenderer implements Renderer {
         this.pseudo3d.addItem(KIND_CAR, i, c.x, c.y);
       }
     }
-    if (geo) {
-      this.pseudo3d.drawShadows(ctx, geo);
+    if (world) {
+      this.pseudo3d.drawShadows(ctx, world);
       this.drawCalls++;
     }
-    if (layers.markings) {
+    if (layers.markings && !infinite) {
       const ed = frame.mode === 'edit' ? frame.editor : null;
       this.markingPainter.drawAll(
         ctx,
@@ -233,7 +240,7 @@ export class Canvas2DRenderer implements Renderer {
       );
       this.drawCalls += 2;
     }
-    this.pseudo3d.draw(ctx, geo, sim ? this.drawCustom : null);
+    this.pseudo3d.draw(ctx, world, sim ? this.drawCustom : null);
     this.drawCalls += this.pseudo3d.drawn;
     if (sim) {
       this.carPainter.drawParticles(ctx, sim.particles);

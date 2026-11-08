@@ -28,6 +28,10 @@ import type { WorldGeometry } from '../world/world.ts';
 import type { WorldModel } from '../world/worldModel.ts';
 import { Particles, SkidMarks } from './particlesSim.ts';
 import { TrafficManager } from './traffic.ts';
+import type { ProgressTracker, SimExtension, SimHost } from './host.ts';
+import { CoverageProgress, RouteProgress } from '../ai/fitness.ts';
+import { planRoute } from '../nav/routeFollower.ts';
+import { activeTarget } from '../markings/target.ts';
 
 export interface SimConfig {
   trafficCount: number;
@@ -49,13 +53,10 @@ export const DEFAULT_SIM: Readonly<SimConfig> = Object.freeze({
   sensor: {},
 });
 
-/** Something that adds cars and per-step logic to the simulation (the AI population). */
-export interface SimExtension {
-  readonly cars: readonly Car[];
-  step(sim: Simulation, dt: number): void;
-}
+export type { SimExtension } from './host.ts';
 
-export class Simulation {
+export class Simulation implements SimHost {
+  readonly kind = 'city' as const;
   readonly model: WorldModel;
   readonly geometry: WorldGeometry;
   readonly config: SimConfig;
@@ -134,6 +135,41 @@ export class Simulation {
       y: hit.point.y + ux * (rw / 4),
       angle: headingFromDirection(ux, uy),
     };
+  }
+
+  /** Re-seeds and respawns traffic and restarts the lights for a new generation. */
+  resetForGeneration(): void {
+    this.rng.setState(this.config.seed >>> 0);
+    this.reservations.clear();
+    this.lights.reset();
+    this.traffic.spawnAll(this.env);
+    this.particles.clear();
+  }
+
+  /** Spawn pose for population car `index` (round-robin over Start markings). */
+  spawnPose(index: number): SpawnPose {
+    return this.defaultSpawn(index);
+  }
+
+  /**
+   * Fitness basis for the AI population: progress along the lane route from the first
+   * start to the active target when one exists, otherwise distinct road cells covered.
+   */
+  createProgressTracker(capacity: number): ProgressTracker {
+    const target = activeTarget(this.model.markings.ofType('target'));
+    const rw = this.model.settings.roadWidth;
+    if (target) {
+      const r = planRoute(
+        this.model.graph,
+        this.routeGraph,
+        this.model.markings,
+        rw,
+        this.defaultSpawn(0),
+        { marking: target },
+      );
+      if (r) return new RouteProgress(capacity, r.path, r.sStart, r.sEnd, rw * 0.45);
+    }
+    return new CoverageProgress(capacity);
   }
 
   /** Attaches the AI population (or any extension). */

@@ -61,6 +61,13 @@ test('Simulate mode: traffic moves, the manual car drives with the keyboard', as
     `simulate mode (2D, 14 traffic cars + manual car): avg frame ${frameMs.toFixed(1)} ms`,
   );
   expect(await canvasVariance(page)).toBeGreaterThan(50);
+  // the neural network panel is visible and animating (two captures differ)
+  const panel = page.locator('.nn-canvas');
+  await expect(panel).toBeVisible();
+  const a1 = await panel.screenshot();
+  await page.waitForTimeout(250);
+  const a2 = await panel.screenshot();
+  expect(a1.equals(a2)).toBe(false);
   await shot(page, 'sim-2d');
 
   // Tab returns to Edit mode and the simulation stops

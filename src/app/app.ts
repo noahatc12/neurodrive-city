@@ -33,8 +33,17 @@ import { Simulation } from '../engine/sim/simulation.ts';
 import { planRoute } from '../engine/nav/routeFollower.ts';
 import { activeTarget } from '../engine/markings/target.ts';
 import type { LanePath } from '../engine/nav/lanePath.ts';
-import type { Sensor } from '../engine/car/sensor.ts';
 import { Hud } from '../ui/hud.ts';
+import { NnPanel } from '../ui/panels/nnPanel.ts';
+import { Population, type GenerationRecord, type Selection } from '../engine/ai/evolution.ts';
+import type { NeuralNetwork } from '../engine/ai/network.ts';
+import { brainFits, inputNames, parseBrain, serializeBrain } from '../engine/ai/brainSchema.ts';
+import { InfiniteRoadSim } from '../engine/sim/infiniteRoad.ts';
+import type { SimHost } from '../engine/sim/host.ts';
+import type { Car } from '../engine/car/car.ts';
+import { Sensor } from '../engine/car/sensor.ts';
+
+const BRAIN_KEY = 'nd:brain';
 import { h } from '../ui/dom.ts';
 import { HelpOverlay } from '../ui/panels/helpOverlay.ts';
 import { WorldPanel } from '../ui/panels/worldPanel.ts';
@@ -116,7 +125,28 @@ export class App {
   private lastThumbAt = -Infinity;
   private importing = false;
   /** The running simulation (Simulate/Train modes). */
-  sim: Simulation | null = null;
+  sim: SimHost | null = null;
+  population: Population | null = null;
+  /** Set while the infinite road mode is active. */
+  infinite: { curvy: boolean } | null = null;
+  /** Training settings (spec G3, G5). */
+  evo = {
+    cars: 300,
+    mutation: 0.1,
+    selection: 'course' as Selection,
+    timeLimit: 60,
+    stuckTimeout: 5,
+  };
+  savedBrain: NeuralNetwork | null = null;
+  pretrained: NeuralNetwork | null = null;
+  /** In Simulate mode: follow the AI demo car instead of your car. */
+  focusAi = false;
+  /** Bumped to force a fresh simulation (Reset, brain import). */
+  private simGen = 0;
+  private readonly sensorBuf: Sensor[] = [];
+  private readonly emptyHistory: GenerationRecord[] = [];
+  private readonly bestPos: Vec2 = { x: 0, y: 0 };
+  readonly nnPanel: NnPanel;
   private simKey = '';
   private simRoute: { path: LanePath; from: number; to: number } | null = null;
   private manualCrashAt = -1;
@@ -124,6 +154,10 @@ export class App {
   private carBuf = new Float64Array(0);
   private carKinds = new Uint8Array(0);
   readonly hud = new Hud([
+    { key: 'gen', label: 'Generation', smooth: false },
+    { key: 'alive', label: 'Alive', smooth: false },
+    { key: 'best', label: 'Best (m)' },
+    { key: 'bestEver', label: 'Best ever (m)' },
     { key: 'speed', label: 'Speed', suffix: ' km/h' },
     { key: 'traffic', label: 'Traffic', smooth: false },
     { key: 'parked', label: 'Parked', smooth: false },
@@ -173,6 +207,40 @@ export class App {
       MENU,
     );
     this.toolbar = new Toolbar((id) => this.setTool(id));
+    this.nnPanel = new NnPanel({
+      onCars: (n) => {
+        this.evo.cars = Math.max(1, Math.min(1000, Math.round(n)));
+        this.toast(`${this.evo.cars} AI cars from the next restart`);
+        this.simGen++;
+      },
+      onMutation: (m) => {
+        this.evo.mutation = m;
+        this.population?.setMutation(m);
+      },
+      onSpeed: (x) => {
+        this.loop.speed = x;
+        this.nnPanel.setSpeed(x);
+      },
+      onSelection: (sel) => {
+        this.evo.selection = sel;
+        this.population?.setSelection(sel);
+      },
+      onTurbo: () => this.toast('Turbo training arrives with the worker build'),
+      onCurvy: (on) => this.enterInfinite(on),
+      onSave: () => this.saveBestBrain(),
+      onDiscard: () => this.discardBrain(),
+      onNextGen: () => {
+        if (this.sim && this.population) this.population.nextGeneration(this.sim);
+      },
+      onReset: () => {
+        this.simGen++;
+        this.toast('Training restarted');
+      },
+      onExport: () => this.exportBrain(),
+      onImport: (f) => void this.importBrain(f),
+      onCollapse: () => {},
+    });
+    this.nnPanel.setTurboAvailable(false);
     this.worldPanel = new WorldPanel(
       {
         onSettings: (p) => this.applySettings(p),
@@ -211,13 +279,14 @@ export class App {
         this.toaster.el,
         this.minimap.el,
         this.hud.el,
+        this.nnPanel.el,
         this.progress.el,
         this.help.el,
         this.fileInput,
       ),
     );
     this.toolbar.setActive('graph');
-    for (const id of ['infinite']) this.topbar.setItemEnabled(id, false);
+
     this.topbar.view.setDisabled('3d', true, '3D view arrives in a later build');
 
     this.worldManager = new WorldManager({
@@ -278,6 +347,7 @@ export class App {
   async start(): Promise<void> {
     this.resize();
     this.store = await openWorldStore();
+    this.loadSavedBrain();
     const lastId = getLastWorldId();
     let loaded = false;
     if (lastId) {
@@ -330,16 +400,23 @@ export class App {
     this.updateSim(f.dtMs);
     const sim = this.sim;
     frame.sim = sim;
-    frame.lights = sim ? sim.lights : this.lights;
-    frame.focusCarId = sim?.manual ? sim.manual.id : null;
-    frame.focusSensor = sim?.manualSensor ?? null;
-    frame.extraSensors = this.noSensors;
-    frame.route = sim ? this.simRoute : null;
-    if (sim?.manual)
-      this.viewport.follow(sim.manual.lerpX(f.alpha), sim.manual.lerpY(f.alpha), f.dtMs / 1000);
+    frame.lights = sim?.lights ?? this.lights;
+    const focus = this.focusCar();
+    frame.focusCarId = focus ? focus.id : null;
+    frame.bestCarId =
+      this.population && (this.mode === 'train' || this.infinite)
+        ? this.population.bestCar.id
+        : null;
+    frame.focusSensor = this.focusSensorOf(focus);
+    frame.extraSensors = this.layers.debugSensors ? this.liveSensors() : this.noSensors;
+    frame.route = sim && !this.infinite ? this.simRoute : null;
+    if (focus) this.viewport.follow(focus.lerpX(f.alpha), focus.lerpY(f.alpha), f.dtMs / 1000);
+    if (this.mode !== 'edit') this.updatePanel(f, focus);
+    const r0 = performance.now();
     this.renderer2d.render(frame);
+    this.stats.recordRender(performance.now() - r0);
     this.stats.drawCalls = this.renderer2d.drawCalls;
-    if (this.layers.minimap) this.renderMinimap(f.timeMs);
+    if (this.layers.minimap && !this.infinite) this.renderMinimap(f.timeMs);
     this.stats.record(f.dtMs, f.simCostMs);
     if (f.timeMs - this.statusTick > 100) {
       this.statusTick = f.timeMs;
@@ -371,74 +448,377 @@ export class App {
     this.minimap.resize(narrow ? 160 : 230, narrow ? 116 : 160, dpr);
   }
 
+  // ---------------------------------------------------------------------------
+  // Simulation, training and the infinite road
+  // ---------------------------------------------------------------------------
+
+  /** Key describing which simulation should exist right now; a change rebuilds it. */
+  private desiredSimKey(): string {
+    if (this.infinite) return `inf:${this.infinite.curvy}:${this.evo.cars}:${this.simGen}`;
+    return `city:${this.mode}:${this.model.geometryVersion}:${this.model.markings.version}:${this.evo.cars}:${this.simGen}`;
+  }
+
   /** Creates, refreshes or discards the simulation for the current mode and world. */
   private updateSim(dtMs: number): void {
     if (this.mode === 'edit') {
       if (this.sim) this.stopSim();
       return;
     }
-    const geo = this.worldManager.geometry;
-    if (!geo || !this.worldManager.isFresh(this.model)) return;
-    const key = `${this.model.geometryVersion}:${this.model.markings.version}`;
-    if (!this.sim || key !== this.simKey) this.startSim();
+    if (!this.infinite && (!this.worldManager.geometry || !this.worldManager.isFresh(this.model)))
+      return;
+    const key = this.desiredSimKey();
+    if (!this.sim || key !== this.simKey) this.startSim(key);
     const sim = this.sim;
+    const pop = this.population;
     if (!sim) return;
     // the manual car respawns two seconds after a crash
     const m = sim.manual;
-    if (m?.damaged) {
+    if (m?.damaged && sim instanceof Simulation) {
       if (this.manualCrashAt < 0) this.manualCrashAt = sim.time;
       else if (sim.time - this.manualCrashAt > 2) {
         sim.resetManual();
         this.manualCrashAt = -1;
       }
     }
+    const training = this.mode === 'train' || this.infinite !== null;
+    this.hud.setTitle(this.infinite ? 'Infinite road' : training ? 'Training' : 'Simulation');
     this.hud.setBadge(this.loop.paused ? 'Paused' : `×${this.loop.speed}`, this.loop.paused);
+    for (const k of ['gen', 'alive', 'best', 'bestEver']) this.hud.show(k, training);
+    for (const k of ['speed', 'parked', 'arrivals']) this.hud.show(k, !training);
+    this.hud.show('traffic', !this.infinite);
+    if (pop) {
+      this.hud.set('gen', pop.generation);
+      this.hud.set('alive', pop.alive);
+      this.hud.set('best', pop.bestFitness / 10);
+      this.hud.set('bestEver', pop.bestEverFitness / 10);
+    }
     this.hud.set('speed', m ? Math.abs(m.speed) * 0.36 : 0);
-    this.hud.set('traffic', sim.traffic.cars.filter((c) => c.active).length);
-    this.hud.set('parked', sim.traffic.parkedNow);
-    this.hud.set('arrivals', sim.traffic.stats.arrivals);
-    this.hud.set('crashes', sim.damageCount.traffic + sim.damageCount.manual);
+    if (sim instanceof Simulation) {
+      let active = 0;
+      for (const c of sim.traffic.cars) if (c.active) active++;
+      this.hud.set('traffic', active);
+      this.hud.set('parked', sim.traffic.parkedNow);
+      this.hud.set('arrivals', sim.traffic.stats.arrivals);
+      this.hud.set(
+        'crashes',
+        sim.damageCount.traffic + sim.damageCount.manual + sim.damageCount.ai,
+      );
+    } else if (sim instanceof InfiniteRoadSim) {
+      this.hud.set('crashes', sim.damageCount);
+    }
     this.hud.set('fps', this.stats.fps);
     this.hud.set('simms', this.stats.avgSimMs);
     this.hud.update(dtMs, this.reducedMotion);
   }
 
-  private startSim(): void {
-    const geo = this.worldManager.geometry;
-    if (!geo) return;
-    this.sim = new Simulation(this.model, geo, {
-      trafficCount: 14,
-      manual: true,
-      seed: this.model.seed,
-    });
-    this.simKey = `${this.model.geometryVersion}:${this.model.markings.version}`;
-    this.manualCrashAt = -1;
+  /** The brain used to seed a population: saved brain, else the bundled pre-trained one. */
+  private seedBrain(): NeuralNetwork | null {
+    const inputs = new Sensor().rayCount;
+    if (this.savedBrain && brainFits(this.savedBrain, inputs)) return this.savedBrain;
+    if (this.pretrained && brainFits(this.pretrained, inputs)) return this.pretrained;
+    return null;
+  }
+
+  private startSim(key: string): void {
+    const seed = this.seedBrain();
+    const evo = {
+      population: this.evo.cars,
+      mutation: this.evo.mutation,
+      selection: this.evo.selection,
+      timeLimit: this.evo.timeLimit,
+      stuckTimeout: this.evo.stuckTimeout,
+      seed: 1 + this.simGen,
+    };
     this.renderer2d.skidDecal.clear();
-    // route preview from the start to the active target
     this.simRoute = null;
-    const target = activeTarget(this.model.markings.ofType('target'));
-    const start = this.sim.defaultSpawn();
-    if (target) {
-      const r = planRoute(
-        this.model.graph,
-        this.sim.routeGraph,
-        this.model.markings,
-        this.model.settings.roadWidth,
-        start,
-        { marking: target },
+    this.focusAi = false;
+    if (this.infinite) {
+      const host = new InfiniteRoadSim({ curvy: this.infinite.curvy, seed: 2026 });
+      const pop = new Population(host, evo, seed);
+      host.setExtension(pop);
+      this.sim = host;
+      this.population = pop;
+      this.viewport.set({ x: 0, y: -150 }, 0.85);
+    } else {
+      const geo = this.worldManager.geometry;
+      if (!geo) return;
+      const train = this.mode === 'train';
+      const sim = new Simulation(this.model, geo, {
+        trafficCount: 14,
+        manual: !train,
+        seed: this.model.seed,
+      });
+      const pop = new Population(
+        sim,
+        train
+          ? evo
+          : {
+              population: 1,
+              mutation: 0,
+              timeLimit: 120,
+              stuckTimeout: 8,
+              seed: 1,
+              resetWorldEachGeneration: false,
+            },
+        seed,
       );
-      if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd };
+      sim.setExtension(pop);
+      this.sim = sim;
+      this.population = pop;
+      // route preview from the start to the active target
+      const target = activeTarget(this.model.markings.ofType('target'));
+      if (target) {
+        const r = planRoute(
+          this.model.graph,
+          sim.routeGraph,
+          this.model.markings,
+          this.model.settings.roadWidth,
+          sim.defaultSpawn(),
+          { marking: target },
+        );
+        if (r) this.simRoute = { path: r.path, from: r.sStart, to: r.sEnd };
+      }
+      const focus = sim.manual ?? pop.bestCar;
+      this.viewport.set({ x: focus.x, y: focus.y }, Math.max(this.viewport.zoom, 0.7));
     }
+    this.simKey = key;
+    this.manualCrashAt = -1;
     this.loop.paused = false;
-    const m = this.sim.manual;
-    if (m) this.viewport.set({ x: m.x, y: m.y }, Math.max(this.viewport.zoom, 0.7));
+    this.nnPanel.setTrainMode(
+      this.mode === 'train' || this.infinite !== null,
+      this.infinite !== null,
+    );
+    this.syncTrainingPanel();
   }
 
   private stopSim(): void {
     this.sim = null;
+    this.population = null;
     this.simKey = '';
     this.simRoute = null;
     this.loop.paused = true;
+  }
+
+  /** The car the camera, sensors and network panel follow. */
+  private focusCar(): Car | null {
+    const sim = this.sim;
+    const pop = this.population;
+    if (!sim) return null;
+    if (this.mode === 'train' || this.infinite) return pop ? pop.bestCar : null;
+    if (this.focusAi && pop) return pop.cars[0] ?? null;
+    return sim.manual ?? pop?.cars[0] ?? null;
+  }
+
+  private focusSensorOf(car: Car | null): Sensor | null {
+    if (!car) return null;
+    const sim = this.sim;
+    if (sim instanceof Simulation && car === sim.manual) return sim.manualSensor;
+    const pop = this.population;
+    if (pop && car.kind === 'ai') return pop.sensors[car.tag] ?? null;
+    return null;
+  }
+
+  /** Sensors of all live population cars (reused array) for the "all rays" toggle. */
+  private liveSensors(): readonly Sensor[] {
+    const out = this.sensorBuf;
+    out.length = 0;
+    const pop = this.population;
+    if (!pop) return out;
+    for (let i = 0; i < pop.cars.length && out.length < 300; i++) {
+      const c = pop.cars[i];
+      const s = pop.sensors[i];
+      if (c && s && !c.damaged && pop.eliminated[i] === 0) out.push(s);
+    }
+    return out;
+  }
+
+  /** Feeds the network panel with the focused AI car's brain and stats. */
+  private updatePanel(f: FrameInfo, focus: Car | null): void {
+    const pop = this.population;
+    const aiFocus = focus && focus.kind === 'ai' && pop ? focus : (pop?.cars[0] ?? null);
+    const brain = aiFocus && pop ? (pop.brains[aiFocus.tag] ?? null) : null;
+    this.nnPanel.setNetwork(
+      brain,
+      pop ? pop.generation * 10_000 + (aiFocus?.tag ?? 0) : 0,
+      new Sensor().rayCount,
+    );
+    this.nnPanel.update(
+      f.timeMs,
+      f.dtMs,
+      {
+        generation: pop?.generation ?? 0,
+        fitness: pop && aiFocus ? (pop.fitness[aiFocus.tag] ?? 0) / 10 : 0,
+        bestEver: pop ? pop.bestEverFitness / 10 : 0,
+        speed: aiFocus ? Math.abs(aiFocus.speed) * 0.36 : 0,
+        alive: pop?.alive ?? 0,
+        total: pop?.cars.length ?? 0,
+      },
+      pop?.history ?? this.emptyHistory,
+      this.reducedMotion,
+    );
+  }
+
+  private syncTrainingPanel(): void {
+    this.nnPanel.syncControls(
+      this.evo.cars,
+      this.evo.mutation,
+      this.evo.selection,
+      this.infinite?.curvy ?? false,
+      false,
+    );
+    this.nnPanel.setSpeed(this.loop.speed);
+    this.nnPanel.setBrainNote(this.brainNote());
+  }
+
+  private brainNote(): string {
+    if (this.savedBrain) return 'Saved brain: seeds generation 0 (car 0 keeps it exactly).';
+    if (this.pretrained) return 'Using the bundled pre-trained brain as the seed.';
+    return 'No saved brain: generation 0 starts random.';
+  }
+
+  /** Starts the classic infinite road (training on a 3-lane road with traffic). */
+  enterInfinite(curvy = false): void {
+    this.infinite = { curvy };
+    this.topbar.worldName.textContent = curvy ? 'Infinite road (curvy)' : 'Infinite road';
+    this.minimap.el.classList.add('hidden');
+    if (this.mode !== 'train') {
+      this.mode = 'train';
+      this.topbar.mode.set('train');
+      this.editor.editable = false;
+      this.root.querySelector('.app')?.setAttribute('data-mode', 'train');
+    }
+    this.simKey = '';
+  }
+
+  private leaveInfinite(): void {
+    if (!this.infinite) return;
+    this.infinite = null;
+    this.topbar.worldName.textContent = this.model.meta.name;
+    this.minimap.el.classList.toggle('hidden', !this.layers.minimap);
+    this.simKey = '';
+  }
+
+  // --- brains -----------------------------------------------------------------
+
+  private loadSavedBrain(): void {
+    try {
+      const raw = localStorage.getItem(BRAIN_KEY);
+      if (!raw) return;
+      const res = parseBrain(JSON.parse(raw));
+      this.savedBrain = res.ok ? res.net : null;
+    } catch {
+      this.savedBrain = null;
+    }
+  }
+
+  /** Saves the best brain so far (S). */
+  saveBestBrain(): void {
+    const pop = this.population;
+    if (!pop || (this.mode !== 'train' && !this.infinite)) {
+      this.toast('Start training (T) to save a brain');
+      return;
+    }
+    const file = serializeBrain(pop.bestEver, inputNames(new Sensor().rayCount), {
+      generations: pop.generation,
+      bestFitness: Math.round(pop.bestEverFitness),
+      world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
+      mutation: this.evo.mutation,
+      date: new Date().toISOString(),
+    });
+    try {
+      localStorage.setItem(BRAIN_KEY, JSON.stringify(file));
+      this.savedBrain = pop.bestEver.clone();
+      this.toast(
+        `Best brain saved (generation ${pop.generation}, fitness ${Math.round(pop.bestEverFitness / 10)})`,
+        { kind: 'success' },
+      );
+    } catch {
+      this.toast('Could not save the brain (storage blocked)', { kind: 'error' });
+    }
+    this.syncTrainingPanel();
+  }
+
+  /** Discards the saved brain (X) with an undo action. */
+  discardBrain(): void {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(BRAIN_KEY);
+      localStorage.removeItem(BRAIN_KEY);
+    } catch {
+      // ignore
+    }
+    const had = this.savedBrain !== null;
+    this.savedBrain = null;
+    this.syncTrainingPanel();
+    if (!had) {
+      this.toast('No saved brain to discard');
+      return;
+    }
+    this.toast('Saved brain discarded', {
+      kind: 'warn',
+      action: {
+        label: 'Undo',
+        run: () => {
+          if (raw) localStorage.setItem(BRAIN_KEY, raw);
+          this.loadSavedBrain();
+          this.syncTrainingPanel();
+        },
+      },
+    });
+  }
+
+  exportBrain(): void {
+    const pop = this.population;
+    const net = pop ? pop.bestEver : this.savedBrain;
+    if (!net) {
+      this.toast('No brain to export yet');
+      return;
+    }
+    const file = serializeBrain(net, inputNames(new Sensor().rayCount), {
+      generations: pop?.generation ?? 0,
+      bestFitness: Math.round(pop?.bestEverFitness ?? 0),
+      world: this.infinite ? 'infinite-road' : slug(this.model.meta.name),
+      mutation: this.evo.mutation,
+      date: new Date().toISOString(),
+    });
+    const blob = new Blob([JSON.stringify(file, null, 1)], { type: 'application/json' });
+    const a = h('a', {
+      attrs: { href: URL.createObjectURL(blob), download: 'neurodrive-best.brain.json' },
+    });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  async importBrain(file: File): Promise<void> {
+    let json: unknown;
+    try {
+      json = JSON.parse(await file.text());
+    } catch {
+      this.toast('That file is not valid JSON', { kind: 'error' });
+      return;
+    }
+    const res = parseBrain(json);
+    if (!res.ok) {
+      this.toast('Not a valid brain file', { kind: 'error', details: res.errors });
+      return;
+    }
+    const inputs = new Sensor().rayCount;
+    if (!brainFits(res.net, inputs)) {
+      this.toast(
+        `Brain topology [${res.net.topology.join(', ')}] does not match the current sensors (${inputs} inputs, 4 outputs); not applied`,
+        { kind: 'error' },
+      );
+      return;
+    }
+    localStorage.setItem(BRAIN_KEY, JSON.stringify(res.file));
+    this.savedBrain = res.net;
+    this.simGen++;
+    this.toast(`Brain imported (${res.file.training.generations} generations)`, {
+      kind: 'success',
+    });
+    this.syncTrainingPanel();
   }
 
   private renderMinimap(timeMs: number): void {
@@ -452,6 +832,11 @@ export class App {
     (c[2] as Vec2).y = b.maxY;
     (c[3] as Vec2).x = b.minX;
     (c[3] as Vec2).y = b.maxY;
+    const best = this.population && this.mode === 'train' ? this.population.bestCar : null;
+    if (best) {
+      this.bestPos.x = best.x;
+      this.bestPos.y = best.y;
+    }
     this.minimap.render({
       geometry: this.worldManager.geometry,
       segments: this.model.graph.segments,
@@ -459,7 +844,7 @@ export class App {
       cars: this.packCars(),
       carCount: this.sim ? this.sim.cars.length : 0,
       carKinds: this.sim ? this.carKinds : null,
-      bestCar: null,
+      bestCar: best ? this.bestPos : null,
       targets: this.targetList(),
       route: null,
       timeMs,
@@ -503,6 +888,7 @@ export class App {
 
   /** Replaces the world model (load, demo, OSM import) without a page reload. */
   setModel(model: WorldModel, view: WorldView | null = null): void {
+    this.leaveInfinite();
     this.model = model;
     this.editor.setModel(model);
     this.worldManager.reset();
@@ -513,6 +899,12 @@ export class App {
   }
 
   setMode(mode: AppMode): void {
+    if (this.infinite && mode === 'simulate') {
+      this.toast('The infinite road is a training mode; pick Edit to return to the city');
+      this.topbar.mode.set(this.mode);
+      return;
+    }
+    if (this.infinite && mode === 'edit') this.leaveInfinite();
     if (this.mode === mode) return;
     this.mode = mode;
     this.topbar.mode.set(mode);
@@ -609,6 +1001,9 @@ export class App {
         break;
       case 'library':
         await this.library.show();
+        break;
+      case 'infinite':
+        this.enterInfinite(false);
         break;
       default:
         this.toast('Coming in a later build');
@@ -969,7 +1364,15 @@ export class App {
   /** Arrow keys / WASD drive the manual car in Simulate mode. Returns true if handled. */
   private driveKey(e: KeyboardEvent, down: boolean): boolean {
     const sim = this.sim;
-    if (!sim?.manual || this.mode === 'edit' || e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (
+      !(sim instanceof Simulation) ||
+      !sim.manual ||
+      this.mode === 'edit' ||
+      e.ctrlKey ||
+      e.metaKey ||
+      e.altKey
+    )
+      return false;
     const k = e.key.toLowerCase();
     const map: Record<string, keyof typeof sim.keys> = {
       arrowup: 'up',
@@ -1039,17 +1442,39 @@ export class App {
         break;
       case 'sim.faster':
         this.loop.speed = Math.min(8, this.loop.speed * 2);
+        this.nnPanel.setSpeed(this.loop.speed);
         this.toast(`Simulation speed ×${this.loop.speed}`);
         break;
       case 'sim.slower':
         this.loop.speed = Math.max(1, this.loop.speed / 2);
+        this.nnPanel.setSpeed(this.loop.speed);
         this.toast(`Simulation speed ×${this.loop.speed}`);
         break;
       case 'sim.resetCar':
-        this.sim?.resetManual();
+        if (this.sim instanceof Simulation) this.sim.resetManual();
         break;
       case 'view.focusBest':
-        if (this.sim?.manual) this.viewport.followPausedUntil = 0;
+        if (this.mode === 'simulate') this.focusAi = !this.focusAi;
+        this.viewport.followPausedUntil = 0;
+        break;
+      case 'mode.train':
+        if (this.infinite) this.setMode('edit');
+        else this.setMode(this.mode === 'train' ? 'simulate' : 'train');
+        break;
+      case 'view.nnPanel':
+        this.nnPanel.setCollapsed(!this.nnPanel.isCollapsed);
+        break;
+      case 'view.sensors':
+        this.setLayer('debugSensors', !this.layers.debugSensors);
+        this.toast(
+          this.layers.debugSensors ? 'Showing all sensor rays' : "Showing the focused car's rays",
+        );
+        break;
+      case 'brain.save':
+        this.saveBestBrain();
+        break;
+      case 'brain.discard':
+        this.discardBrain();
         break;
       case 'view.minimap':
         this.setLayer('minimap', !this.layers.minimap);
@@ -1090,9 +1515,16 @@ export class App {
         setMode: (m: AppMode) => this.setMode(m),
         setSimSpeed: (x: number) => {
           this.loop.speed = Math.max(1, Math.min(8, Math.round(x)));
+          this.nnPanel.setSpeed(this.loop.speed);
         },
+        setTraining: (cfg: Partial<{ cars: number; mutation: number; timeLimit: number }>) => {
+          Object.assign(this.evo, cfg);
+          this.simGen++;
+        },
+        enterInfinite: (curvy: boolean) => this.enterInfinite(curvy),
+        saveBrain: () => this.saveBestBrain(),
         setKeys: (k: Partial<Record<'up' | 'down' | 'left' | 'right', boolean>>) => {
-          if (this.sim) Object.assign(this.sim.keys, k);
+          if (this.sim instanceof Simulation) Object.assign(this.sim.keys, k);
         },
       },
     };
@@ -1116,6 +1548,25 @@ export class App {
           : null;
       },
       minimap: () => ({ staticRedraws: this.minimap.staticRedraws }),
+      training: () => {
+        const pop = this.population;
+        return pop
+          ? {
+              generation: pop.generation,
+              alive: pop.alive,
+              total: pop.cars.length,
+              bestFitness: pop.bestFitness,
+              bestEver: pop.bestEverFitness,
+              history: pop.history.map((r) => ({ ...r })),
+              infinite: this.infinite !== null,
+            }
+          : null;
+      },
+      nn: () => ({
+        framesDrawn: this.nnPanel.viz.framesDrawn,
+        collapsed: this.nnPanel.isCollapsed,
+        hasBrain: this.savedBrain !== null,
+      }),
       sim: () => {
         const sim = this.sim;
         if (!sim) return null;
@@ -1133,10 +1584,10 @@ export class App {
                 damaged: sim.manual.damaged,
               }
             : null,
-          traffic: {
-            ...sim.traffic.stats,
-            active: sim.traffic.cars.filter((c) => c.active).length,
-          },
+          traffic:
+            sim instanceof Simulation
+              ? { ...sim.traffic.stats, active: sim.traffic.cars.filter((c) => c.active).length }
+              : null,
           carPositions: sim.cars.map((c) => [Math.round(c.x), Math.round(c.y)]),
         };
       },

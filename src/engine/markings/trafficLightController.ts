@@ -141,6 +141,17 @@ export class TrafficLightSystem {
     });
   }
 
+  /** Restarts every controller at the first approach's green (deterministic replays). */
+  reset(): void {
+    for (const g of this.groups) {
+      g.phase = 0;
+      g.stage = 'green';
+      g.timer = 0;
+    }
+    this.prevColor.clear();
+    this.sinceChange.clear();
+  }
+
   /** Advances all controllers by `dt` simulation seconds. */
   update(dt: number): void {
     const { green, yellow, allRed } = this.timing;

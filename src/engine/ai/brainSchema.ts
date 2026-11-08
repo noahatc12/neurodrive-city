@@ -1,0 +1,137 @@
+/**
+ * Brain file format (`*.brain.json`) with a hand-written validator.
+ * @module engine/ai/brainSchema
+ */
+import { NeuralNetwork, type Activation, type Level } from './network.ts';
+
+export const BRAIN_FORMAT = 'neurodrive.brain';
+export const BRAIN_VERSION = 1;
+
+export interface BrainTraining {
+  generations: number;
+  bestFitness: number;
+  world: string;
+  mutation: number;
+  date: string;
+}
+
+export interface BrainFile {
+  format: typeof BRAIN_FORMAT;
+  version: number;
+  topology: number[];
+  activation: Activation;
+  inputs: string[];
+  outputs: string[];
+  levels: { weights: number[][]; biases: number[] }[];
+  training: BrainTraining;
+}
+
+export const OUTPUT_NAMES = ['forward', 'left', 'right', 'reverse'] as const;
+
+/** Input names for a sensor configuration (rays plus optional navigation extras). */
+export function inputNames(rayCount: number, extras: readonly string[] = []): string[] {
+  return [...Array.from({ length: rayCount }, (_, i) => `ray${i}`), ...extras];
+}
+
+const r6 = (v: number): number => Math.round(v * 1e6) / 1e6;
+
+/** Serializes a network (weights as an inputs × outputs matrix per level). */
+export function serializeBrain(
+  net: NeuralNetwork,
+  inputs: readonly string[],
+  training: BrainTraining,
+): BrainFile {
+  return {
+    format: BRAIN_FORMAT,
+    version: BRAIN_VERSION,
+    topology: [...net.topology],
+    activation: net.activation,
+    inputs: [...inputs],
+    outputs: [...OUTPUT_NAMES],
+    levels: net.levels.map((l: Level) => ({
+      weights: Array.from({ length: l.inputCount }, (_, i) =>
+        Array.from({ length: l.outputCount }, (_, j) => r6(l.weight(i, j))),
+      ),
+      biases: Array.from(l.biases, r6),
+    })),
+    training: { ...training },
+  };
+}
+
+export type BrainResult =
+  { ok: true; net: NeuralNetwork; file: BrainFile } | { ok: false; errors: string[] };
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** Validates and builds a network from parsed JSON. */
+export function parseBrain(input: unknown): BrainResult {
+  const errors: string[] = [];
+  if (!isObj(input)) return { ok: false, errors: ['brain file is not a JSON object'] };
+  if (input.format !== BRAIN_FORMAT) errors.push(`format: expected "${BRAIN_FORMAT}"`);
+  if (input.version !== BRAIN_VERSION) errors.push(`version: expected ${BRAIN_VERSION}`);
+  const topo = input.topology;
+  if (
+    !Array.isArray(topo) ||
+    topo.length < 2 ||
+    !topo.every((n) => Number.isInteger(n) && (n as number) > 0)
+  ) {
+    errors.push('topology: expected an array of at least two positive integers');
+    return { ok: false, errors };
+  }
+  const activation =
+    input.activation === 'tanh' ? 'tanh' : input.activation === 'step' ? 'step' : null;
+  if (!activation) errors.push('activation: expected "step" or "tanh"');
+  const levels = input.levels;
+  if (!Array.isArray(levels) || levels.length !== topo.length - 1) {
+    errors.push(`levels: expected ${topo.length - 1} levels`);
+    return { ok: false, errors };
+  }
+  const net = new NeuralNetwork(topo as number[], activation ?? 'step');
+  levels.forEach((lv, li) => {
+    const level = net.levels[li] as Level;
+    if (!isObj(lv) || !Array.isArray(lv.weights) || !Array.isArray(lv.biases)) {
+      errors.push(`levels[${li}]: expected { weights, biases }`);
+      return;
+    }
+    if (lv.weights.length !== level.inputCount)
+      errors.push(`levels[${li}].weights: expected ${level.inputCount} rows`);
+    (lv.weights as unknown[]).forEach((row, i) => {
+      if (!Array.isArray(row) || row.length !== level.outputCount || !row.every(num)) {
+        errors.push(`levels[${li}].weights[${i}]: expected ${level.outputCount} numbers`);
+        return;
+      }
+      row.forEach((w, j) => level.setWeight(i, j, w));
+    });
+    if (lv.biases.length !== level.outputCount || !(lv.biases as unknown[]).every(num)) {
+      errors.push(`levels[${li}].biases: expected ${level.outputCount} numbers`);
+    } else level.biases.set(lv.biases as number[]);
+  });
+  if (errors.length > 0) return { ok: false, errors: errors.slice(0, 12) };
+  const t = isObj(input.training) ? input.training : {};
+  const file: BrainFile = {
+    format: BRAIN_FORMAT,
+    version: BRAIN_VERSION,
+    topology: [...(topo as number[])],
+    activation: activation ?? 'step',
+    inputs: Array.isArray(input.inputs) ? input.inputs.map(String) : inputNames(topo[0] as number),
+    outputs: [...OUTPUT_NAMES],
+    levels: levels as BrainFile['levels'],
+    training: {
+      generations: num(t.generations) ? t.generations : 0,
+      bestFitness: num(t.bestFitness) ? t.bestFitness : 0,
+      world: typeof t.world === 'string' ? t.world : 'unknown',
+      mutation: num(t.mutation) ? t.mutation : 0.1,
+      date: typeof t.date === 'string' ? t.date : new Date(0).toISOString(),
+    },
+  };
+  return { ok: true, net, file };
+}
+
+/** True when a brain's topology fits a sensor configuration (inputs and outputs). */
+export function brainFits(net: NeuralNetwork, inputCount: number): boolean {
+  return net.inputCount === inputCount && net.outputCount === OUTPUT_NAMES.length;
+}

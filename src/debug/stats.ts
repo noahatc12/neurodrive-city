@@ -12,6 +12,8 @@ export class Stats {
   private i = 0;
   private count = 0;
   drawCalls = 0;
+  /** Rolling average of the time spent inside renderer.render (ms). */
+  avgRenderMs = 0;
   triangles = 0;
   stepsLastFrame = 0;
   /** Exposed for e2e: rolling average frame interval in ms. */
@@ -34,6 +36,11 @@ export class Stats {
     this.avgFrameMs = f / this.count;
     this.avgSimMs = s / this.count;
     this.fps = this.avgFrameMs > 0 ? 1000 / this.avgFrameMs : 0;
+  }
+
+  /** Records the renderer's own cost for this frame (exponential moving average). */
+  recordRender(ms: number): void {
+    this.avgRenderMs = this.avgRenderMs === 0 ? ms : this.avgRenderMs * 0.95 + ms * 0.05;
   }
 
   /** Average over the most recent `frames` samples (for auto quality downgrade). */

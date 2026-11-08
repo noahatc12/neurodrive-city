@@ -1036,3 +1036,190 @@ input[type='range'] {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ==========================================================================
+   Neural network / training panel (right dock)
+   ========================================================================== */
+.nn-panel {
+  position: absolute;
+  top: calc(var(--topbar-h) + 22px);
+  right: 10px;
+  bottom: 12px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  z-index: 16;
+  overflow: hidden;
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    opacity var(--dur) var(--ease-out);
+}
+.app[data-mode='edit'] .nn-panel {
+  transform: translateX(calc(100% + 20px));
+  opacity: 0;
+  pointer-events: none;
+}
+.nn-panel.collapsed {
+  transform: translateX(calc(100% - 52px));
+}
+.nn-panel.collapsed .nn-body,
+.nn-panel.collapsed .nn-head h2 {
+  opacity: 0;
+  pointer-events: none;
+}
+.panel-grip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+.panel-grip:hover {
+  background: linear-gradient(90deg, #22d3ee33, transparent);
+}
+.nn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 4px 14px;
+}
+.nn-head h2 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  transition: opacity var(--dur) var(--ease-out);
+}
+.nn-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+  overflow-y: auto;
+  transition: opacity var(--dur) var(--ease-out);
+}
+.nn-stats {
+  display: grid;
+  grid-template-columns: repeat(3, auto 1fr);
+  gap: 3px 8px;
+  margin: 0;
+  font-size: 11px;
+}
+.nn-stats dt {
+  color: var(--text-faint);
+}
+.nn-stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.nn-viz {
+  position: relative;
+  border-radius: var(--radius-m);
+  background: radial-gradient(ellipse at 50% 40%, #121c2c 0%, #070a10 100%);
+  border: 1px solid var(--panel-border);
+}
+.nn-canvas {
+  display: block;
+}
+.nn-tooltip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 4px 8px;
+  border-radius: var(--radius-s);
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border-strong);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.nn-tooltip.show {
+  opacity: 1;
+}
+.spark-wrap {
+  display: grid;
+  gap: 4px;
+}
+.spark-label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.sparkline {
+  display: block;
+  border-radius: var(--radius-s);
+  background: #05080d80;
+}
+.train-controls {
+  display: grid;
+  gap: 4px;
+}
+.train-controls .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 0;
+}
+.row-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.chips {
+  display: flex;
+  gap: 4px;
+}
+.select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--panel-border-strong);
+  border-radius: var(--radius-s);
+  background: #0b0f17;
+  font-size: 12px;
+}
+.btn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+.btn-grid .btn {
+  justify-content: center;
+}
+.btn-grid svg {
+  width: 15px;
+  height: 15px;
+}
+.brain-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.hud-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.hud-legend.hidden-legend span:not(.legend-toggle) {
+  display: none;
+}
+.hud-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.nn-stats dd {
+  white-space: nowrap;
+}

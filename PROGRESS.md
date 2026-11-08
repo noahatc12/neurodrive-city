@@ -12,13 +12,13 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 3     | World generation and 2D world rendering                            | done        |
 | 4     | Markings, save/load, OSM                                           | done        |
 | 5     | Cars, sensors, damage, traffic, navigation                         | done        |
-| 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | pending     |
+| 6     | Neural network, evolution, visualizer, infinite road (tag v0.9-2d) | done        |
 | 7     | 3D renderer foundation                                             | pending     |
 | 8     | 3D polish, pre-trained brain, turbo worker                         | pending     |
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 6, neural network, evolution, visualizer, training UX, infinite road (then tag v0.9-2d).
+**Next:** Phase 7, 3D renderer foundation (lazy Three.js chunk, instancing, camera rig, picking).
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -211,6 +211,38 @@ final Definition of Done audit. Tag `v1.0.0`.
   destinations), and a 1e9-radius spatial-hash query that scanned billions of empty cells
   (the hash now walks occupied cells for huge queries).
 
+### Phase 6 (2026-11-07), tag v0.9-2d
+
+- `npm run verify`: typecheck 0, lint 0, 23 test files / 223 tests, build OK, e2e 12 passed.
+- Build: main chunk 224.30 kB (gzip 72.89 kB).
+- Coverage (src/engine): lines 97.81% (ai 93.98%, sim 93.53%).
+- Seeded evolution test on the infinite road (60 cars, 20 s generations): best fitness by
+  generation 2514, 2536, 2547, 2551, 2551, 2551, 2551, 2558, 2558, 2558; generation 10 beats
+  generation 1 and the best never decreases (identical traffic every generation plus elitism).
+- City training test: 30 cars with traffic, tournament selection, seeded brain kept exactly in
+  car 0, at least 2 generations in 20 simulated seconds, positive fitness.
+- Unit tests: hand-computed feed-forward for step and tanh, topology guards, clone/copy,
+  mutate(0) identity, mutate(1) in [-1, 1], small mutations stay within 0.2, uniform crossover,
+  brain file round trip and validation, fitness trackers (axis, coverage that ignores revisits).
+- e2e `training.spec.ts`: 50 cars at ×8 for 10 s reached generation 7 with best ever fitness
+  153 m; the network panel animates; S saves the brain and it survives a reload. Infinite road:
+  80 cars train on the endless road (best fitness > 100 units after 4 s at ×4), Tab returns to the
+  city editor. `sim2d.spec.ts` now also checks that the network canvas changes between captures.
+  `fps.spec.ts`: 2D Simulate in headless Chromium: frame 22.3 ms (threshold 33), render 1.8 ms,
+  sim 0.58 ms. 2D Train with 300 AI cars plus 14 traffic: render 2.6 ms, sim 3.17 ms per frame,
+  frame 38.6 ms in headless software rendering (informational).
+- Screenshot `phase-6-train-2d.png`: Train mode in Grid Town at ×8, generation 7: the best car in
+  lime with its rays near the route, a skid trail, traffic cars, the HUD (generation, alive 49,
+  best and best-ever in metres, colour legend), the network panel with the live network (green
+  firing outputs, warm and cool dashed connections, bias rings), the rising sparkline and the
+  training controls. `phase-6-infinite-road.png`: the 3-lane road with dashed dividers, traffic
+  cars ahead, the leading car in lime with rays and exhaust puffs, the panel in infinite mode.
+- Performance fix found by profiling: the world-sized skid decal canvas was resampled every frame
+  (about 10 ms in software rendering); replaced by sparse 512-unit tiles that exist only where
+  marks are. Simulate-mode render time went from 11.4 ms to 1.4 ms.
+
 ## Known issues
 
-(none yet)
+- Training controls live inside `ui/panels/nnPanel.ts`; the spec's file list names a separate
+  `trainingPanel.ts` (to be split out during Phase 9 polish). `settingsPanel.ts` arrives with the
+  3D quality and time-of-day settings in Phase 8.

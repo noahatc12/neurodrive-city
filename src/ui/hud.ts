@@ -49,11 +49,31 @@ export class Hud {
         row: dt,
       });
     }
+    // colour legend (spec M), click to collapse
+    const swatch = (color: string, label: string): HTMLElement =>
+      h('span', {}, h('i', { style: { background: color } }), label);
+    const legend = h(
+      'div',
+      { class: 'hud-legend', role: 'button', tabIndex: 0, aria: { label: 'Toggle legend' } },
+      swatch('#a3e635', 'best'),
+      swatch('#22d3ee', 'population'),
+      swatch('#fbbf24', 'traffic'),
+      swatch('#5b6474', 'damaged'),
+      swatch('#e6edf7', 'you'),
+    );
+    const toggleLegend = (): void => {
+      legend.classList.toggle('hidden-legend');
+    };
+    legend.addEventListener('click', toggleLegend);
+    legend.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') toggleLegend();
+    });
     this.el = h(
       'section',
       { class: 'hud glass', aria: { label: 'Simulation statistics', live: 'off' } },
       h('div', { class: 'hud-head' }, this.title, this.badge),
       grid,
+      legend,
     );
   }
 
