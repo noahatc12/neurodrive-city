@@ -44,7 +44,16 @@ describe('math/polygon: basics', () => {
 describe('math/polygon: point containment', () => {
   const square = rect(0, 0, 10, 10);
   // concave "U" shape
-  const u = new Polygon([v(0, 0), v(10, 0), v(10, 10), v(7, 10), v(7, 3), v(3, 3), v(3, 10), v(0, 10)]);
+  const u = new Polygon([
+    v(0, 0),
+    v(10, 0),
+    v(10, 10),
+    v(7, 10),
+    v(7, 3),
+    v(3, 3),
+    v(3, 10),
+    v(0, 10),
+  ]);
 
   it('detects inside and outside points', () => {
     expect(polygonContainsPoint(square, v(5, 5))).toBe(true);
@@ -104,7 +113,16 @@ describe('math/polygon: segment classification', () => {
 
   it('is not fooled by a segment whose midpoint is inside but ends outside', () => {
     // midpoint (5, 5) inside, both endpoints outside the concave U's arms
-    const u = new Polygon([v(0, 0), v(10, 0), v(10, 10), v(7, 10), v(7, 3), v(3, 3), v(3, 10), v(0, 10)]);
+    const u = new Polygon([
+      v(0, 0),
+      v(10, 0),
+      v(10, 10),
+      v(7, 10),
+      v(7, 3),
+      v(3, 3),
+      v(3, 10),
+      v(0, 10),
+    ]);
     expect(classifySegment(v(-5, 2), v(15, 2), u)).toBe('crossing');
     expect(classifySegment(v(1, 8), v(9, 8), u)).toBe('crossing'); // crosses the notch
   });
@@ -149,7 +167,8 @@ describe('math/polygon: union', () => {
     for (const s of border) {
       const m = mid(s);
       const strictlyInsideA = m.x > 0 + 1e-6 && m.x < 10 - 1e-6 && m.y > 1e-6 && m.y < 10 - 1e-6;
-      const strictlyInsideB = m.x > 5 + 1e-6 && m.x < 15 - 1e-6 && m.y > 5 + 1e-6 && m.y < 15 - 1e-6;
+      const strictlyInsideB =
+        m.x > 5 + 1e-6 && m.x < 15 - 1e-6 && m.y > 5 + 1e-6 && m.y < 15 - 1e-6;
       expect(strictlyInsideA || strictlyInsideB).toBe(false);
     }
   });
@@ -202,12 +221,16 @@ describe('math/polygon: union', () => {
     };
     for (let r = 0; r < 20; r++) {
       for (let c = 0; c < 13; c++) {
-        polys.push(roundRect(c * spacing - 50, r * spacing - 50, (c + 1) * spacing + 50, r * spacing + 50));
+        polys.push(
+          roundRect(c * spacing - 50, r * spacing - 50, (c + 1) * spacing + 50, r * spacing + 50),
+        );
       }
     }
     for (let c = 0; c < 20 && polys.length < 500; c++) {
       for (let r = 0; r < 12 && polys.length < 500; r++) {
-        polys.push(roundRect(c * spacing - 50, r * spacing - 50, c * spacing + 50, (r + 1) * spacing + 50));
+        polys.push(
+          roundRect(c * spacing - 50, r * spacing - 50, c * spacing + 50, (r + 1) * spacing + 50),
+        );
       }
     }
     expect(polys).toHaveLength(500);

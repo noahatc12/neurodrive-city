@@ -8,7 +8,7 @@ Status of every phase, the next step, known issues, and gate evidence.
 | ----- | ------------------------------------------------------------------ | ----------- |
 | 0     | Scaffold and tooling                                               | done (2ac7d05) |
 | 1     | Math, graph, spatial hash                                          | done        |
-| 2     | 2D editor and viewport                                             | pending     |
+| 2     | 2D editor and viewport                                             | done        |
 | 3     | World generation and 2D world rendering                            | pending     |
 | 4     | Markings, save/load, OSM                                           | pending     |
 | 5     | Cars, sensors, damage, traffic, navigation                         | pending     |
@@ -18,7 +18,7 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 9     | Stretch, accessibility, UX polish                                  | pending     |
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | pending     |
 
-**Next:** Phase 2, 2D editor and viewport.
+**Next:** Phase 3, world generation and 2D world rendering.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -104,6 +104,28 @@ final Definition of Done audit. Tag `v1.0.0`.
   fork, state save/restore), `bbox.ts`, `spatialHash.ts` (incremental, stamp-deduped queries),
   `point.ts`, `segment.ts`, `graph.ts` (stable ids, version counter, events, picking index,
   split, restore for undo, id-independent hash).
+
+### Phase 2 (2026-11-07)
+
+- `npm run verify`: typecheck 0 errors, lint 0 errors/0 warnings, 15 test files / 139 tests
+  passed, build OK, e2e 2 passed (smoke, editor).
+- Build: main chunk `index-*.js` 84.99 kB (gzip 26.62 kB), CSS 3.56 kB gzip.
+- Coverage (src/engine): lines 99.54%, branches 90.15%.
+- e2e `editor.spec.ts` covers: 4 clicks add 4 points (checked through `window.__ND__`), closing
+  the loop, dragging a point, undo/redo of the drag, segment click and shift-click selection,
+  one-way toggle, delete, undo, Alt+click split, stop marking placement, Shift+drag box select
+  and delete (bound marking removed with its segment), undo of every step back to an empty world,
+  redo of every step, and IndexedDB autosave surviving a reload.
+- Screenshot `phase-2-editor-graph.png`: glass top bar (brand, Edit/Simulate/Train switch with
+  the active thumb on Edit, 2D/3D switch with 3D disabled, World menu, help), left tool rail with
+  the active-tool highlight on Roads, collapsed "World settings" panel, a closed rectangular loop
+  of four roads drawn as dark asphalt bands with dashed white centre lines and rounded outer
+  corners, the selected first point with a cyan fill and an amber dashed hover ring, and the
+  bottom status bar (undo/redo, Snap chip, 100%, cursor position in metres, counts).
+  `phase-2-editor-2d.png` (smoke) shows the empty editor with the world grid.
+- Bug found and fixed while testing in the browser: hover state was refreshed only on pointer
+  move, so a press without a preceding move (touch, pen, synthetic input) acted on the previously
+  hovered point. Pointer-down now recomputes hover first.
 
 ## Known issues
 

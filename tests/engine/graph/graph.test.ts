@@ -97,7 +97,12 @@ describe('graph/graph: queries', () => {
 
   it('pointsInRect selects points inside a box', () => {
     const { g } = square();
-    expect(g.pointsInRect(-1, -1, 101, 50).map((p) => p.id).sort()).toEqual([0, 1]);
+    expect(
+      g
+        .pointsInRect(-1, -1, 101, 50)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual([0, 1]);
   });
 });
 
@@ -155,7 +160,12 @@ describe('graph/graph: versioning, events and hashing', () => {
 
     // Same geometry, different insertion order and ids, reversed undirected segments
     const other = new Graph();
-    const q = [other.addPoint(0, 100), other.addPoint(100, 100), other.addPoint(100, 0), other.addPoint(0, 0)];
+    const q = [
+      other.addPoint(0, 100),
+      other.addPoint(100, 100),
+      other.addPoint(100, 0),
+      other.addPoint(0, 0),
+    ];
     for (let i = 0; i < 4; i++) other.addSegment(q[(i + 1) % 4] as Point, q[i] as Point);
     expect(other.equals(g)).toBe(true);
     const s = other.segments[0];

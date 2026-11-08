@@ -64,9 +64,7 @@ export class Segment implements SegmentFlags {
 
   /** Same endpoints in either order. */
   connects(p: Point, q: Point): boolean {
-    return (
-      (this.a.id === p.id && this.b.id === q.id) || (this.a.id === q.id && this.b.id === p.id)
-    );
+    return (this.a.id === p.id && this.b.id === q.id) || (this.a.id === q.id && this.b.id === p.id);
   }
 
   /** Point at parameter t (0 = a, 1 = b). */

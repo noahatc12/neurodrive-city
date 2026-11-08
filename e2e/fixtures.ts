@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Bump at the start of each phase so screenshots are archived per phase. */
-export const CURRENT_PHASE = 0;
+export const CURRENT_PHASE = 2;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SHOT_DIR = join(here, '__screenshots__');

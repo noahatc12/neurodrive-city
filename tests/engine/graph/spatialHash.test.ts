@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { SpatialHash } from '../../../src/engine/graph/spatialHash.ts';
 
-const box = (minX: number, minY: number, maxX: number, maxY: number) => ({ minX, minY, maxX, maxY });
+const box = (minX: number, minY: number, maxX: number, maxY: number) => ({
+  minX,
+  minY,
+  maxX,
+  maxY,
+});
 
 describe('graph/spatialHash', () => {
   it('rejects a non-positive cell size', () => {

@@ -66,6 +66,10 @@ export class Graph {
   private nextSegmentId = 0;
   private _version = 0;
   private readonly scratch: number[] = [];
+  private pointCache: Point[] = [];
+  private pointCacheVersion = -1;
+  private segmentCache: Segment[] = [];
+  private segmentCacheVersion = -1;
 
   /** @param cellSize spatial-hash cell size for picking (world units) */
   constructor(cellSize = 250) {
@@ -78,14 +82,25 @@ export class Graph {
     return this._version;
   }
 
-  /** Points in insertion order (snapshot array). */
-  get points(): Point[] {
-    return [...this.pointMap.values()];
+  /**
+   * Points in insertion order. The array is cached and rebuilt only after a mutation,
+   * so per-frame iteration allocates nothing. Do not hold on to it across edits.
+   */
+  get points(): readonly Point[] {
+    if (this.pointCacheVersion !== this._version) {
+      this.pointCache = [...this.pointMap.values()];
+      this.pointCacheVersion = this._version;
+    }
+    return this.pointCache;
   }
 
-  /** Segments in insertion order (snapshot array). */
-  get segments(): Segment[] {
-    return [...this.segmentMap.values()];
+  /** Segments in insertion order (cached like {@link points}). */
+  get segments(): readonly Segment[] {
+    if (this.segmentCacheVersion !== this._version) {
+      this.segmentCache = [...this.segmentMap.values()];
+      this.segmentCacheVersion = this._version;
+    }
+    return this.segmentCache;
   }
 
   get pointCount(): number {

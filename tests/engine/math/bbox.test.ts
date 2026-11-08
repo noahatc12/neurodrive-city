@@ -13,8 +13,18 @@ import {
 
 describe('math/bbox', () => {
   it('builds boxes from points and segments', () => {
-    expect(bboxOf([{ x: 1, y: 5 }, { x: -2, y: 3 }])).toEqual({ minX: -2, minY: 3, maxX: 1, maxY: 5 });
-    expect(segmentBBox({ x: 4, y: 0 }, { x: 1, y: 2 })).toEqual({ minX: 1, minY: 0, maxX: 4, maxY: 2 });
+    expect(
+      bboxOf([
+        { x: 1, y: 5 },
+        { x: -2, y: 3 },
+      ]),
+    ).toEqual({ minX: -2, minY: 3, maxX: 1, maxY: 5 });
+    expect(segmentBBox({ x: 4, y: 0 }, { x: 1, y: 2 })).toEqual({
+      minX: 1,
+      minY: 0,
+      maxX: 4,
+      maxY: 2,
+    });
     expect(isEmptyBBox(emptyBBox())).toBe(true);
     expect(isEmptyBBox(bboxOf([{ x: 0, y: 0 }]))).toBe(false);
   });
