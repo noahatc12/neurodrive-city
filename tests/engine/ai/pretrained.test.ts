@@ -6,8 +6,9 @@ import {
   inputLayouts,
   parseBrain,
 } from '../../../src/engine/ai/brainSchema.ts';
-import { NAV_INPUTS } from '../../../src/engine/ai/evolution.ts';
+import { LIGHT_INPUT, NAV_INPUTS } from '../../../src/engine/ai/evolution.ts';
 import {
+  broadCityCheck,
   infiniteTrainer,
   PRETRAINED_ROAD,
   TRAIN_DT,
@@ -86,10 +87,14 @@ describe('ai/pre-trained city brain (public/brains/city.brain.json)', () => {
   it('is a v2 route-input brain for the city sensors and documents its training', () => {
     const { net, file } = loadCity();
     expect(file.version).toBe(2);
-    expect(net.topology).toEqual([12, 8, 4]);
+    // v1.2: the five route inputs plus the traffic-light input (DECISIONS #108)
+    expect(net.topology).toEqual([13, 8, 4]);
     expect(net.activation).toBe('tanh');
-    expect(fitLayout(net, file.inputs, inputLayouts(7, NAV_INPUTS))?.nav).toBe(true);
-    expect(file.inputs.slice(7)).toEqual(['lat', 'hdg', 'wpNear', 'wpFar', 'speed']);
+    expect(fitLayout(net, file.inputs, inputLayouts(7, NAV_INPUTS, [LIGHT_INPUT]))).toMatchObject({
+      nav: true,
+      light: true,
+    });
+    expect(file.inputs.slice(7)).toEqual(['lat', 'hdg', 'wpNear', 'wpFar', 'speed', 'light']);
     expect(file.training.world).toBe('grid-town');
     expect(file.training.generations).toBeGreaterThan(0);
     expect(file.training.population).toBe(300);
@@ -107,7 +112,22 @@ describe('ai/pre-trained city brain (public/brains/city.brain.json)', () => {
     );
     expect(v.crashed).toBe(false);
     expect(v.laneViolation).toBe(false);
+    expect(v.redLight).toBe(false);
     expect(v.arrived).toBe(true);
     expect(v.inLane).toBeGreaterThanOrEqual(0.95);
   }, 60_000);
+
+  it('on 20 unseen traffic seeds: reaches the target cleanly in 9, never runs a red light (seeded)', () => {
+    const { net } = loadCity();
+    const { model, geo } = gridTown();
+    const b = broadCityCheck(model, geo, net, 20);
+    console.info(
+      `city brain on 20 unseen traffic seeds: ${b.passes} passed, ${b.crashed} crashed, ${b.violations} lane violations, ${b.redLights} red lights, ${(b.inLane * 100).toFixed(1)}% in lane`,
+    );
+    // the shipped claim (README "AI navigation"): measured, not a target
+    expect(b.passes).toBeGreaterThanOrEqual(9);
+    expect(b.violations).toBe(0);
+    expect(b.redLights).toBe(0);
+    expect(b.inLane).toBeGreaterThanOrEqual(0.95);
+  }, 180_000);
 });

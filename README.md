@@ -55,8 +55,9 @@ and [the first-run tour](docs/media/tour.png). All of them are written by the Pl
 ### Neural network and evolution
 - A fully-connected network written from scratch (step or tanh activation). On the infinite road
   the course homage [5, 6, 4]: five rays in, forward / left / right / reverse out. In cities
-  [12, 8, 4] with tanh: seven rays plus five route inputs (offset from the lane centre, heading
-  error, two waypoints ahead, speed), so the cars learn to follow a route in their own lane.
+  [13, 8, 4] with tanh: seven rays plus six route inputs (offset from the lane centre, heading
+  error, two waypoints ahead, speed, the next red light), so the cars learn to follow a route in
+  their own lane and stop for red lights.
 - Hundreds of AI cars evolve at once: course-style selection (one elite) or tournament selection
   with uniform crossover and three elites, stuck detection, seeded generations that replay identical
   traffic, and per-generation best and average fitness in a sparkline.
@@ -134,13 +135,14 @@ flowchart LR
   N[wp near: route 60 units ahead] --> H
   W[wp far: route 160 units ahead] --> H
   S[speed] --> H
+  T[light: the next red light] --> H
   H --> F[forward]
   H --> Le[left]
   H --> Ri[right]
   H --> Re[reverse]
 ```
 
-That is the city network ([12, 8, 4], tanh); the infinite road keeps the course's five rays and
+That is the city network ([13, 8, 4], tanh); the infinite road keeps the course's five rays and
 six hidden neurons. Each level computes `sum = Σ input × weight`, then the step activation fires when `sum > bias`
 (the course's binary controls) or tanh gives proportional outputs. A ray reading is
 `1 − distance / length` of its nearest hit, so 0 means clear and values near 1 mean an obstacle
@@ -197,19 +199,24 @@ instead, and the test or file that proves it. In short:
 ## AI navigation
 
 In a city with a Start and a Target, AI cars learn to drive the lane route between them, in the
-right-hand lane, and to stop at the Target. Since v1.1 a pre-trained city brain does this out of
-the box: it drives the Simulate demo car and seeds Train mode in city worlds.
+right-hand lane, to stop for red lights and to stop at the Target. A pre-trained city brain does
+this out of the box: it drives the Simulate demo car and seeds Train mode in city worlds.
 
-**What the network sees.** Seven rays over 150° reaching 200 units, plus five route inputs
+**What the network sees.** Seven rays over 150° reaching 200 units, plus six route inputs
 measured against the lane path: `lat` (signed offset from the lane centre, ±1 at a quarter road
 width; negative is toward oncoming traffic), `hdg` (heading error against the lane, ±1 at 90°),
-`wp near` and `wp far` (signed angles to the lane 60 and 160 units ahead) and `speed`.
+`wp near` and `wp far` (signed angles to the lane 60 and 160 units ahead), `speed`, and (since
+v1.2) `light`, the proximity of the next red or yellow traffic light on the route (1 at the stop
+line, 0 at 250 units or when it is green). Topology [13, 8, 4], tanh.
 
 **What it is rewarded for.** Progress along the route, credited per step by how well the car keeps
 its lane: full credit within 0.15 road widths of the lane centre, falling to a quarter at 0.35 and
-nothing beyond. More than one second with the car's centre over the centre line eliminates it (and
-costs 20% of its fitness, like a crash); driving the wrong way earns nothing; reaching the end of
-the route adds its length again and freezes the car there.
+nothing beyond. More than one second with the car's centre over the centre line, or crossing a
+stop line on red, eliminates the car (and costs 20% of its fitness, like a crash); driving the
+wrong way earns nothing; reaching the end of the route adds its length again and freezes the car
+there. Waiting is not being stuck: a car standing behind another car or at a red light keeps its
+place. During training the 300 learners are ghosts that traffic does not see, so a ghost only
+crashes when it drives into something, not when traffic drives into it.
 
 **How it learns corners.** Every car starts at the one Start, so no car sees a corner until the
 straight is solved. The curriculum evaluates only the first 320 units of the route, then 260 more
@@ -217,23 +224,22 @@ whenever 10% of the cars (or the best car twice in a row) reach the end, so the 
 the straight, then each corner in turn. Spawn positions jitter by ±8% of a road width and ±4°, so
 no brain can memorise one exact trajectory. The training panel shows "Stage k · route x%".
 
-**The bundled city brain** (`public/brains/city.brain.json`, [12, 8, 4] tanh) was trained in Grid
-Town with `npm run train:city -- --seed 12 --mutation 0 --vary-traffic --stuck 30 --time 90 --until 4`:
-300 cars, 105 generations, 230 s on one CPU core. It covered the whole 555 m route (5548 units,
-nine corners, a signalised junction and an all-way stop) at generation 88. Validation drives one
-exact copy alone among 14 traffic cars:
+**The bundled city brain** (`public/brains/city.brain.json`, [13, 8, 4] tanh) was trained in Grid
+Town with `npm run train:city -- --seed 11 --mutation 0 --vary-traffic --until 4 --broad-until 10`:
+300 cars, 120 generations, 444 s on one CPU core, with Train mode's 5 s stuck timeout and 60 s
+generations and a new traffic pattern every generation. It covered the whole 555 m route (5548
+units, nine corners, a signalised junction and an all-way stop) at generation 87. Validation
+drives one exact copy alone among 14 traffic cars:
 
 | Check | Result |
 | ----- | ------ |
-| 5 validation seeds (the bar: 3 of 5 reach the Target with no crash and at least 95% in lane) | 4 of 5 passed: arrived in 35.8 to 36.9 s with 99.3 to 100% of the time in lane; the fifth crashed into traffic at 28% of the route |
-| 20 unseen traffic seeds | 5 reached the Target; 15 crashed into traffic; 0 lane violations; 99.4% of the time in lane on average |
-| Simulate mode for 5 minutes (traffic never resets) | Arrived on 2 of 17 laps; never more than 15.9 units left of the lane centre (the centre line is 25 units away) |
+| 5 validation seeds (the bar: 3 of 5 reach the Target with no crash and at least 95% in lane) | 4 of 5 passed: arrived in 75.6 to 76.5 s (it waits at the red light) with 99.0 to 99.7% of the time in lane; the fifth crashed into traffic at 42% of the route |
+| 20 unseen traffic seeds | 9 reached the Target cleanly; 11 crashed; no lane violations and no red lights run; 99.9% of the time in lane and 71% of the route on average |
+| Simulate mode for 5 minutes (traffic never resets) | Arrived on 2 of 5 laps; never more than 12.3 units left of the lane centre (the centre line is 25 units away) |
 
-So the lane discipline is solid and every corner is taken, but traffic is the weak point: the
-network does not see traffic lights, and most failed drives end against the queue in front of the
-signalised junction. Training cannot teach queueing yet, because the 300 learners are ghosts that
-traffic does not see, and a ghost waiting in a queue gets driven into from behind. The
-[backlog](BACKLOG.md) has the fix and a traffic-light input.
+The lane discipline is solid, every corner is taken and the car stops for red lights. Traffic is
+still the weak point: of the 11 crashes on unseen traffic, 5 end against the back of a queue, 4 in
+junction conflicts with oncoming or crossing traffic and 2 against the kerb.
 
 **What it took** (seeded runs, 300 cars; details in [PROGRESS.md](PROGRESS.md)):
 
@@ -242,13 +248,14 @@ traffic does not see, and a ghost waiting in a queue gets driven into from behin
 | v1.0: rays plus waypoint angle and speed, progress within 0.45 road widths | stopped at the first corner (at most 28% of the route) |
 | v1.1 inputs and fitness, tournament selection, best-ever elite | braked for the first left turn but never steered left |
 | course selection | reached the second left turn, then stalled for 100+ generations: the elite's score from the previous curriculum stage could not be beaten |
-| elite re-evaluated every generation, its bar reset per stage | with mutation 0.05 to 0.12 still stuck at the first corner for 150 to 250 generations (8 seeds); crossover alone (mutation 0) reached the Target in about 100 |
+| elite re-evaluated every generation, its bar reset per stage | with mutation 0.05 to 0.12 still stuck at the first corner (8 seeds for 150 to 250 generations, and 2 more runs in v1.2); crossover alone (mutation 0) reached the Target in about 100 |
 | one replayed traffic pattern | 98% in lane, but 1 of 20 unseen traffic seeds passed (it rear-ended stopped traffic) |
-| a new traffic seed every generation, waiting up to 30 s allowed | the shipped brain (5 of 20) |
+| v1.1: a new traffic pattern every generation, 30 s waits | 5 of 20; traffic hit the waiting ghosts from behind, and the network could not see lights |
+| v1.2: ghosts only crash into things, a light input, the red-light rule, waits are not stuck | the shipped brain: 9 of 20, no red lights run (3 of 11 runs reached the whole route; the best of them shipped) |
 
 Train mode keeps the spec's city defaults (tournament selection, mutation 0.12, 5 s stuck timeout,
 60 s generations); the headless trainer's settings above are training choices, recorded in
-[DECISIONS.md](DECISIONS.md) (#101 to #105). For comparison, the scripted route follower that drives
+[DECISIONS.md](DECISIONS.md) (#101 to #112). For comparison, the scripted route follower that drives
 the traffic scores 100% in lane on the same route and arrives in 43.9 s.
 
 ## Controls
@@ -308,9 +315,9 @@ npm run e2e            # Playwright against a production build under /neurodrive
 npm run verify         # typecheck, lint, test, build, e2e
 ```
 
-![coverage](https://img.shields.io/badge/engine%20line%20coverage-98.0%25-brightgreen) _(static badge; refresh it from `npm run test:coverage`)_
+![coverage](https://img.shields.io/badge/engine%20line%20coverage-98.4%25-brightgreen) _(static badge; refresh it from `npm run test:coverage`)_
 
-At v1.1.0: 268 unit tests in 31 files, engine line coverage 98.0%, and 26 end-to-end specs. The
+At v1.2.0: 280 unit tests in 32 files, engine line coverage 98.4%, and 26 end-to-end specs. The
 wall-clock benchmarks run alone after every other test file, so they measure the code rather than
 a busy CPU.
 
@@ -342,7 +349,7 @@ as `docs/media/demo.gif`.
 - NEAT (evolving topologies) and a reinforcement-learning baseline to compare against.
 - Curved (Bezier) roads and per-segment lane counts.
 - Pedestrians on zebra crossings.
-- AI navigation in traffic: queueing at lights and a traffic-light input (see the backlog).
+- AI navigation in traffic: queues and junction conflicts (see the backlog).
 
 ## Acknowledgements
 

@@ -22,10 +22,10 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 11c   | Follow-up 1 C: headless city training, shipped city brain          | done        |
 | 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | done        |
 | 11e   | Follow-up 2 E: ghost fault rule, light input, red-light rule, waits | done        |
-| 11f   | Follow-up 2 F: retrained city brain, app, e2e, docs (tag v1.2.0)   | in progress |
+| 11f   | Follow-up 2 F: retrained city brain, app, e2e, docs (tag v1.2.0)   | done        |
 
-**Next:** v1.1.0 is complete (follow-up 1: lane discipline and AI navigation that follows the
-route). The open problem is traffic: see "Known issues" and `BACKLOG.md`.
+**Next:** v1.2.0 is complete (follow-up 2: traffic lights and waiting in traffic). What is left of
+the traffic problem is in "Known issues" and `BACKLOG.md`.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -593,13 +593,53 @@ but runs into queues at the signalised junction.
   light input off (#108).
 - Screenshots `phase-11e-*`: as 11d (the bundled brain is still v1.1's; phase F replaces it).
 
+### Follow-up 2, phase F (2026-11-08), tag v1.2.0: the light-aware city brain
+
+- `npm run verify`: typecheck 0, lint 0, 32 test files / 280 tests, build OK (initial chunk 261.88 kB,
+  gzip 84.82 kB; lazy 3D chunk gzip 173.89 kB), e2e 26 passed (5.5 min): the Simulate demo car drove
+  1566 units in 10 s with its offset between −12.1 and +2.0 units (centre line at −25); Train mode
+  seeded from the new brain reached generation 4 with the best car 100% in lane.
+- Screenshots: `phase-11f-sim-city.png` (the demo car crossing a junction in its lane, the network
+  panel's 13 inputs ending with `light`); `phase-11f-train-city.png` (100 cars from the city brain
+  through the first left turn in a tight line in their lane, "Stage 6 · route 29%", "In lane
+  100%"). Copied to `docs/media/` with refreshed `sim-2d.png` and `train-2d.png`.
+- `npm run test:coverage`: 280 tests, engine lines 98.42%.
+- Shipped `public/brains/city.brain.json` ([13, 8, 4] tanh, with the light input), produced by
+  `npm run train:city -- --seed 11 --mutation 0 --vary-traffic --until 4 --broad-until 9` with
+  Train mode's 5 s stuck timeout and 60 s generations (444 s on one core, 333 293 steps). The whole
+  route (stage 22) at generation 87; generation 120's elite chosen. Checked as the file stores it
+  (DECISIONS #113):
+  - 5 validation drives: 4 passed, arriving in 75.6 to 76.5 s (it now waits at the red light)
+    with 99.0 to 99.7% of the time in lane; the fifth crashed into traffic at 42% of the route.
+  - 20 unseen traffic seeds: 9 passed (v1.1: 5), 11 crashed (5 into the back of a queue, 3 with
+    oncoming and 1 with crossing traffic at junctions, 2 against the kerb), no lane violations, no
+    red lights run, 99.9% in lane, 71% of the route on average.
+  - Simulate replay, 5 minutes of continuous traffic: arrived on 2 of 5 laps (v1.1: 2 of 17 shorter
+    laps); worst lateral offset 12.3 units left of the lane centre.
+- Training runs (300 cars, tournament selection, new traffic every generation, 5 s stuck, 60 s):
+  with crossover only, 3 of 11 runs reached the whole route within 100 to 200 generations (seeds 10,
+  11 and 15; broad scores 9, 9 and 8 of 20 as rounded files, the best of seed 11 shipped), the other
+  8 stayed at stages 2 to 15 for 150 to 430 generations. Two control runs with mutation 0.12 stayed
+  at the first corner (74 and 100 generations), as in v1.1. More generations on the whole route
+  helped seed 11 from 6 to 10 of 20 (unrounded) between generations 88 and 120, then it plateaued
+  for 200 generations.
+- Measured on the first light-aware candidate: in Simulate it still ran 4 red lights in 5 minutes
+  and rear-ended queues; 30 more generations on the whole route removed the red-light runs.
+- Tests: `ai/pre-trained city brain` now expects the 13-input layout and gains "on 20 unseen traffic
+  seeds: reaches the target cleanly in 9, never runs a red light" (the measured claim); the seeded
+  drive also checks no red light was run.
+- Docs: README "AI navigation" (the light input, the rules, the new brain's numbers, the v1.2 row of
+  "What it took"), COMPARISON.md row 2, BACKLOG (the remaining traffic problem), DECISIONS #108 to
+  #115.
+
 ## Known issues
 
-- The city brain keeps its lane and takes every corner of Grid Town's route, but traffic is its weak
-  point: it does not see traffic lights, and on unseen traffic most drives end against the queue in
-  front of the signalised junction (5 of 20 unseen seeds reach the target; in a 5-minute Simulate
-  replay 2 of 17 laps). Training cannot teach queueing while learners are ghosts that traffic drives
-  into from behind (BACKLOG).
+- The city brain keeps its lane, takes every corner of Grid Town's route and stops for red lights,
+  but traffic is still its weak point: 9 of 20 unseen traffic seeds reach the target; the other
+  drives end against the back of a queue or in junction conflicts (BACKLOG).
+- `npm run train` (the infinite-road brain) no longer reproduces `pretrained.brain.json` byte for
+  byte: ghosts are now only damaged by what they drive into (DECISIONS #109). The shipped highway
+  brain still passes its test.
 - The bundled brains are trained for their worlds: the city brain for Grid Town's route, the highway
   brain for the infinite road. Other city worlds get the city brain as a starting point for training.
 - A few windows still show a fine speckle in software rendering (SwiftShader texture filtering of
