@@ -36,7 +36,11 @@ import { activeTarget } from '../markings/target.ts';
 export interface SimConfig {
   trafficCount: number;
   collisions: CollisionFlags;
-  /** Population cars collide with each other (default off: they are ghosts). */
+  /**
+   * Population cars are real road users (default off: they are ghosts): they collide with
+   * each other, traffic sensors see them and traffic yields to them at junctions. On for a
+   * single AI car (the Simulate-mode demo car and validation drives), off for training.
+   */
   carCarCollisions: boolean;
   /** Spawn a keyboard-driven car. */
   manual: boolean;
@@ -300,7 +304,7 @@ export class Simulation implements SimHost {
   /** True if any traffic or manual car is within r of (x, y). */
   anyCarWithin(x: number, y: number, r: number, selfId: number): boolean {
     for (const c of this.cars) {
-      if (c.id === selfId || !c.active || c.kind === 'ai') continue;
+      if (c.id === selfId || !c.active || !this.includeDynamic(c)) continue;
       if (Math.hypot(c.x - x, c.y - y) < r) return true;
     }
     return false;
@@ -326,7 +330,7 @@ export class Simulation implements SimHost {
         const fy = -Math.cos(car.angle);
         const core = this.model.settings.roadWidth * 0.6;
         for (const c of this.cars) {
-          if (c === car || !c.active || c.damaged || c.kind === 'ai') continue;
+          if (c === car || !c.active || c.damaged || !this.includeDynamic(c)) continue;
           const d = Math.hypot(c.x - x, c.y - y);
           if (d > r) continue;
           const same = -Math.sin(c.angle) * fx + -Math.cos(c.angle) * fy > 0.9;

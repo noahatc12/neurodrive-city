@@ -19,10 +19,10 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 10    | Docs, deploy readiness, final audit (tag v1.0.0)                   | done        |
 | 11a   | Follow-up 1 A: lane observation inputs, lane-discipline fitness    | done        |
 | 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | done        |
-| 11c   | Follow-up 1 C: headless city training, shipped city brain          | in progress |
+| 11c   | Follow-up 1 C: headless city training, shipped city brain          | done        |
 | 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | todo        |
 
-**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase C.
+**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase D.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -477,6 +477,51 @@ final Definition of Done audit. Tag `v1.0.0`.
   (seven ray glyphs, then the staggered route-input labels) and the training controls with "Route
   inputs (lane + waypoints)" and "Curriculum" ticked and "Stage 2 · route 10%".
   `phase-11b-sim-2d.png`: Simulate mode as in 11a (the demo car changes in phase D).
+
+### Follow-up 1, phase C (2026-11-08): headless city training and the shipped city brain
+
+- `npm run verify`: typecheck 0, lint 0, 31 test files / 268 tests, build OK (initial chunk 257.70 kB,
+  gzip 83.46 kB), e2e 24 passed (4.7 min). Screenshots `phase-11c-*` match 11b (the app changes
+  come in phase D).
+- Shipped `public/brains/city.brain.json` ([12, 8, 4] tanh, brain format v2), produced by
+  `npm run train:city -- --seed 12 --mutation 0 --vary-traffic --stuck 30 --time 90 --until 4`
+  (300 cars, 230 s on one core, 284 889 simulation steps, reproduces byte for byte apart from the
+  date). Curriculum: stage 2 at generation 2, the whole 5548-unit route (stage 22) at generation 88.
+  Generation 105's elite passed 4 of 5 validation drives (one exact copy alone with 14 traffic
+  cars): arrived in 36.9, 36.0, 35.8 and 36.4 s with 100.0, 99.5, 99.3 and 99.6% of the time in
+  lane, no lane violation; the fifth crashed into traffic at 28% of the route. Recorded in the
+  file: generations 105, population 300, in-lane fraction 0.996.
+- Broader check (not part of the bar): on 20 unseen traffic seeds the brain reached the target 5
+  times, crashed 15 times, never crossed the centre line for long (0 lane violations) and averaged
+  99.4% in lane over 57% of the route. A 5-minute headless replay of Simulate mode (traffic never
+  reset) arrived on 2 of 17 laps; the other laps ended against the queue in front of the signalised
+  junction (2400 to 2670 units along the route). The worst lateral offset in that replay was 15.9
+  units left of the lane centre (the centre line is at 25).
+- What it took (all seeded, 300 cars, Grid Town):
+  - Phase B setup as first written: the population braked for the first left turn but never steered
+    left (left output 0.00 through the turn); "brake and stop" scored more than a crash in the turn.
+  - Course selection reached the second left turn and stalled there for 100+ generations: the
+    elite's fitness bar carried over from the previous curriculum stage (twice the old horizon), so
+    nothing could replace it. Fixed by resetting the bar when the horizon grows (DECISIONS #101).
+  - With spawn jitter a lucky elite held slot 0 for good (a run sat at stage 11 for 100+
+    generations). Fixed by keeping the generation's top brains, car 0 re-running the previous elite
+    (DECISIONS #102); the infinite road's "best never decreases" test still holds.
+  - With those fixes, tournament selection with mutation 0 (crossover only) reached the target in
+    about 100 generations, while every run with mutation 0.05 to 0.12 (8 seeds) stayed at the first
+    left turn for 150 to 250 generations. A bug in the trainer's new `--cycle` flag had silently set
+    mutation 0 in the first of those runs; the finding held once the flag was fixed.
+  - Trained on one replayed traffic pattern, the brain passed 3 of 5 validation seeds but 1 of 20
+    unseen ones: 98% in lane, but it rear-ended stopped traffic. Half of the remaining crashes were
+    traffic driving into the back of the AI car, which traffic cannot see; validation and the
+    Simulate demo now make a single AI car a real road user (DECISIONS #103). A red light lasts up to
+    24 s, so validation allows 30 s waits (DECISIONS #104), and the trainer uses new traffic every
+    generation with 30 s waits (DECISIONS #105).
+- Scripted reference (`RouteFollower`, the traffic driver) scored with the same metric along the same
+  route: 100% in lane, lateral offset between −9.3 and +10.8 units, arrival in 43.9 s without traffic.
+- Tests added: `ai/curriculum > resets the elite's bar when the horizon grows`; `ai/pre-trained city
+  brain` (the file is a v2 route-input brain with its training record, in-lane fraction ≥ 0.95; a
+  seeded Grid Town drive from Start to Target with the world's traffic seed arrives in 36.9 s, 100%
+  in lane, no crash, no lane violation).
 
 ## Known issues
 

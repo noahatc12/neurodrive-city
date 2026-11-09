@@ -188,6 +188,29 @@ describe('ai/curriculum', () => {
     expect(pop.fitness[0]).toBeGreaterThan(2 * (CURRICULUM_START + CURRICULUM_STEP) - 25);
   });
 
+  it("resets the elite's bar when the horizon grows (fitness at different horizons is not comparable)", () => {
+    // 2.5 s generations: long enough for 320 units, too short for 580
+    const { host, pop } = population({ population: 20, timeLimit: 2.5 });
+    finishGeneration(host, pop); // everyone arrives at 320: fitness ≈ 2 × 320
+    const stage1 = pop.history[0]?.best ?? 0;
+    expect(stage1).toBeGreaterThan(600);
+    expect(pop.bestEverFitness).toBe(stage1);
+    expect(pop.horizon).toBe(CURRICULUM_START + CURRICULUM_STEP);
+    expect(pop.eliteFitness).toBe(0); // the bar is reset; the elite brain itself is kept
+    // stage 2: only car 0 drives, and the time limit stops it short of the new horizon
+    const stop = brain(false);
+    for (let i = 1; i < pop.brains.length; i++) (pop.brains[i] as NeuralNetwork).copyFrom(stop);
+    finishGeneration(host, pop);
+    const stage2 = pop.history[1]?.best ?? 0;
+    expect(pop.history[1]?.reached).toBe(0);
+    expect(stage2).toBeGreaterThan(CURRICULUM_START);
+    expect(stage2).toBeLessThan(stage1);
+    // a stage-2 best below the stage-1 record still becomes the elite at stage 2 ...
+    expect(pop.eliteFitness).toBe(stage2);
+    // ... while the displayed best ever stays monotone
+    expect(pop.bestEverFitness).toBe(stage1);
+  });
+
   it('is off by default: the whole route is evaluated', () => {
     const { pop } = population({ curriculum: false });
     expect(pop.horizon).toBe(ROUTE);

@@ -1,8 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { brainFits, parseBrain } from '../../../src/engine/ai/brainSchema.ts';
-import { infiniteTrainer, PRETRAINED_ROAD, TRAIN_DT } from '../../../src/engine/ai/trainer.ts';
+import {
+  brainFits,
+  fitLayout,
+  inputLayouts,
+  parseBrain,
+} from '../../../src/engine/ai/brainSchema.ts';
+import { NAV_INPUTS } from '../../../src/engine/ai/evolution.ts';
+import {
+  infiniteTrainer,
+  PRETRAINED_ROAD,
+  TRAIN_DT,
+  validateCityBrain,
+} from '../../../src/engine/ai/trainer.ts';
 import { Sensor } from '../../../src/engine/car/sensor.ts';
+import { parseWorld } from '../../../src/engine/io/serialize.ts';
+import { generateWorld, worldInputFrom, WorldGeometry } from '../../../src/engine/world/world.ts';
 
 function loadBundled() {
   const res = parseBrain(JSON.parse(readFileSync('public/brains/pretrained.brain.json', 'utf8')));
@@ -54,4 +67,47 @@ describe('ai/pre-trained brain (public/brains)', () => {
     );
     expect(trainer.population.generation).toBe(0);
   });
+});
+
+function loadCity() {
+  const res = parseBrain(JSON.parse(readFileSync('public/brains/city.brain.json', 'utf8')));
+  if (!res.ok) throw new Error(res.errors.join('\n'));
+  return res;
+}
+
+function gridTown() {
+  const res = parseWorld(JSON.parse(readFileSync('public/worlds/grid-town.world.json', 'utf8')));
+  if (!res.ok) throw new Error(res.errors.join('\n'));
+  const model = res.value.model;
+  return { model, geo: new WorldGeometry(generateWorld(worldInputFrom(model))) };
+}
+
+describe('ai/pre-trained city brain (public/brains/city.brain.json)', () => {
+  it('is a v2 route-input brain for the city sensors and documents its training', () => {
+    const { net, file } = loadCity();
+    expect(file.version).toBe(2);
+    expect(net.topology).toEqual([12, 8, 4]);
+    expect(net.activation).toBe('tanh');
+    expect(fitLayout(net, file.inputs, inputLayouts(7, NAV_INPUTS))?.nav).toBe(true);
+    expect(file.inputs.slice(7)).toEqual(['lat', 'hdg', 'wpNear', 'wpFar', 'speed']);
+    expect(file.training.world).toBe('grid-town');
+    expect(file.training.generations).toBeGreaterThan(0);
+    expect(file.training.population).toBe(300);
+    expect(file.training.inLaneFraction).toBeGreaterThanOrEqual(0.95);
+    expect(file.training.validation).toMatch(/of 5 validation drives passed/);
+  });
+
+  it('drives Grid Town from the Start to the Target in its lane without a crash (seeded)', () => {
+    const { net } = loadCity();
+    const { model, geo } = gridTown();
+    // one exact copy, alone, with the world's own traffic seed (what Simulate shows)
+    const v = validateCityBrain(model, geo, net, model.seed, 0);
+    console.info(
+      `city brain: ${v.arrived ? 'arrived' : 'did not arrive'} in ${v.seconds.toFixed(1)} s, ${(v.inLane * 100).toFixed(1)}% in lane, ${(v.routeShare * 100).toFixed(0)}% of the route`,
+    );
+    expect(v.crashed).toBe(false);
+    expect(v.laneViolation).toBe(false);
+    expect(v.arrived).toBe(true);
+    expect(v.inLane).toBeGreaterThanOrEqual(0.95);
+  }, 60_000);
 });

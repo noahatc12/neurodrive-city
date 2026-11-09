@@ -271,6 +271,11 @@ export class RouteProgress implements ProgressTracker {
     return this.factor[i] as number;
   }
 
+  /** Route covered by car `i` from the start (units, credited or not). */
+  reached(i: number): number {
+    return Math.max(0, (this.sMax[i] as number) - this.sStart);
+  }
+
   /** Seconds car `i` has spent with its centre over the centre line. */
   oncomingTime(i: number): number {
     return this.oncoming[i] as number;

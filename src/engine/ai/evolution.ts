@@ -8,9 +8,10 @@
  *            all crashed / stuck, or time limit
  *                       ▼
  *   selection:  course     → best brain kept exactly (car 0); everyone else = mutate(best)
- *               tournament → `elite` brains kept exactly (the best ever, then this
- *                            generation's next best); others =
+ *               tournament → the `elite` best brains kept exactly; others =
  *                            mutate(crossover(tournament(k), tournament(k)))
+ *   (car 0 carries the previous elite, re-evaluated: in a deterministic world it
+ *    reproduces its score and is never lost)
  *                       ▼
  *   generation g+1 (no page reload)
  * ```
@@ -196,7 +197,13 @@ export class Population implements SimExtension {
   bestIndex = 0;
   /** Best brain seen across all generations, with its fitness. */
   bestEver: NeuralNetwork;
+  /** Best fitness of any generation (monotone; shown as "best ever"). */
   bestEverFitness = 0;
+  /**
+   * Fitness of {@link bestEver} in its latest evaluation at the current curriculum stage
+   * (0 right after the horizon grows, before it has been evaluated there).
+   */
+  eliteFitness = 0;
   /** Curriculum stage (1-based). */
   stage = 1;
   /** Evaluated route length in units (Infinity without a route). */
@@ -444,15 +451,18 @@ export class Population implements SimExtension {
       stage: this.stage,
       horizon: this.horizon,
     };
-    this.advanceCurriculum(reached, tracker.finished?.(bi) ?? false);
     this.history.push(rec);
     if (this.history.length > 500) this.history.shift();
-    // Elitism: always keep the best brain seen so far (it may come from an older generation).
-    const newBest = rec.best >= this.bestEverFitness;
-    if (newBest) {
-      this.bestEverFitness = rec.best;
-      this.bestEver = (this.brains[bi] as NeuralNetwork).clone();
-    }
+    // Elitism: the generation's best brain becomes the elite. Slot 0 carried the previous
+    // elite and was re-evaluated this generation, so in a deterministic world the elite is
+    // never lost (it reproduces its score); with spawn jitter a lucky run cannot hold the
+    // slot forever, because the elite has to keep earning it.
+    this.eliteFitness = rec.best;
+    this.bestEver = (this.brains[bi] as NeuralNetwork).clone();
+    if (rec.best > this.bestEverFitness) this.bestEverFitness = rec.best;
+    // a longer horizon resets the elite's bar: fitness at different horizons is not
+    // comparable (the elite itself is kept and re-evaluated at the new horizon)
+    this.advanceCurriculum(reached, tracker.finished?.(bi) ?? false);
     const keeper = this.bestEver.clone();
     if (this.config.selection === 'tournament') {
       const ranked = Array.from({ length: n }, (_, i) => i).sort(
@@ -468,10 +478,9 @@ export class Population implements SimExtension {
         return parents[bestIdx] as NeuralNetwork;
       };
       (this.brains[0] as NeuralNetwork).copyFrom(keeper);
-      // further elites: this generation's next best, unmutated (skip the one that just
-      // became the best ever, which is already in slot 0)
+      // further elites: this generation's next best, unmutated (its best is in slot 0)
       let e = 1;
-      for (let r = newBest ? 1 : 0; r < n && e < this.config.elite; r++, e++)
+      for (let r = 1; r < n && e < this.config.elite; r++, e++)
         (this.brains[e] as NeuralNetwork).copyFrom(parents[r] as NeuralNetwork);
       for (let i = e; i < n; i++) {
         const child = crossover(pick(), pick(), this.rng);
@@ -500,6 +509,7 @@ export class Population implements SimExtension {
       this.horizon = Math.min(len, this.horizon + CURRICULUM_STEP);
       this.stage++;
       this.bestReachedLast = false;
+      this.eliteFitness = 0;
     } else this.bestReachedLast = bestReached;
   }
 
@@ -518,6 +528,7 @@ export class Population implements SimExtension {
     this.generation = 0;
     this.history.length = 0;
     this.bestEverFitness = 0;
+    this.eliteFitness = 0;
     this.stage = 1;
     this.horizon = this.config.startHorizon > 0 ? this.config.startHorizon : Infinity;
     this.bestReachedLast = false;

@@ -20,6 +20,7 @@
     "e2e": "playwright test",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build && npm run e2e",
     "train": "node scripts/train.ts",
+    "train:city": "node scripts/train-city.ts",
     "deploy:cf": "npm run build && npx --yes wrangler@4.158.0 pages deploy dist --project-name neurodrive-city --branch main"
   },
   "dependencies": {
