@@ -123,3 +123,36 @@ test('turbo training: a worker streams generations and hands back the best brain
   // the visible population restarted from the turbo brain
   await expect.poll(async () => (await training(page))?.total ?? 0).toBe(60);
 });
+
+test('city training: Grid Town at ×8 for 20 s keeps the best car in its lane', async ({ page }) => {
+  await page.goto('./');
+  await waitForApp(page);
+  await expect
+    .poll(() => nd(page, () => (window.__ND__ as unknown as { cityBrain: boolean }).cityBrain))
+    .toBe(true);
+  await page.evaluate(() => window.__ND__.actions.loadBundled('worlds/grid-town.world.json'));
+  await waitForGeometry(page);
+  await page.evaluate(() => {
+    const a = window.__ND__.actions as unknown as { setTraining(c: { cars: number }): void };
+    a.setTraining({ cars: 100 });
+  });
+  await page.evaluate(() => window.__ND__.actions.setMode('train'));
+  await expect.poll(async () => (await training(page))?.total ?? 0).toBe(100);
+  // seeded from the bundled city brain, with the route inputs and the curriculum
+  await expect(page.locator('.brain-note')).toContainText('city brain');
+  await expect(page.locator('.stage-note')).toContainText('Stage');
+  await page.evaluate(() => window.__ND__.actions.setSimSpeed(8));
+  await page.waitForTimeout(20_000);
+  const t = (await training(page)) as (TrainingHooks & { inLane: number; stage: number }) | null;
+  const hudText = await page
+    .locator('.hud-grid dt', { hasText: 'In lane' })
+    .locator('xpath=following-sibling::dd[1]')
+    .textContent();
+  const hudInLane = Number((hudText ?? '').replace('%', ''));
+  console.info(
+    `city training after 20 s at ×8: generation ${t?.generation}, stage ${t?.stage}, best car in lane ${hudText}`,
+  );
+  expect(t?.generation ?? 0).toBeGreaterThanOrEqual(2);
+  expect(hudInLane).toBeGreaterThanOrEqual(60);
+  await shot(page, 'train-city');
+});

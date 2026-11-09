@@ -20,9 +20,10 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 11a   | Follow-up 1 A: lane observation inputs, lane-discipline fitness    | done        |
 | 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | done        |
 | 11c   | Follow-up 1 C: headless city training, shipped city brain          | done        |
-| 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | todo        |
+| 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | done        |
 
-**Next:** Follow-up 1 (lane discipline and AI navigation that follows the route), phase D.
+**Next:** v1.1.0 is complete (follow-up 1: lane discipline and AI navigation that follows the
+route). The open problem is traffic: see "Known issues" and `BACKLOG.md`.
 
 ## Implementation plan (phases, tasks, files, tests)
 
@@ -523,9 +524,53 @@ final Definition of Done audit. Tag `v1.0.0`.
   seeded Grid Town drive from Start to Target with the world's traffic seed arrives in 36.9 s, 100%
   in lane, no crash, no lane violation).
 
+### Follow-up 1, phase D (2026-11-08), tag v1.1.0: Simulate seed, e2e, docs
+
+- `npm run verify`: typecheck 0, lint 0, 31 test files / 268 tests, build OK (initial chunk 259.10 kB,
+  gzip 83.91 kB; lazy 3D chunk gzip 173.90 kB), e2e 26 passed (6.3 min).
+- `npm run test:coverage`: 268 tests, engine lines 98.02%.
+- Delivered: the app loads both bundled brains; in a city with a Start and an active Target the
+  Simulate demo car drives the city brain (city sensors, route inputs), else the saved brain if it
+  fits, else a random network; Train mode in a city seeds from the turbo brain, the saved brain, then
+  the city brain; the demo car is a real road user that may wait 30 s behind a queue; debug hooks
+  `lane`, `cityBrain` and the training hook's `inLane`, `stage`, `horizon`.
+- e2e added: `training.spec.ts` "city training: Grid Town at ×8 for 20 s keeps the best car in its
+  lane" (100 cars seeded from the city brain: generation 6, stage 6, the HUD's "In lane" 100%; the
+  brain note names the city brain and the stage line shows); `sim2d.spec.ts` "the AI demo car follows
+  the route right of the centre line" (40 samples over 10 s; three runs: 2206 to 2540 units driven,
+  lateral offset between −14.5 and +4.6 units with the centre line at −25).
+- Screenshots: `phase-11d-sim-city.png` (Simulate, camera on the demo car: the cyan car entering the
+  signalised junction in its lane, seven rays fanned, the route ahead tinted green, "In lane 100%",
+  the network panel with the 12-input brain); `phase-11d-train-city.png` (Train at ×8, generation 6:
+  "Stage 6 · route 29%", the best car in lime at a junction with the route tinted green, "In lane
+  100%", "Using the bundled city brain as the seed"); `phase-11d-sim-2d.png` (your car waiting behind
+  the Start while the demo car has already driven off in its lane, compare `phase-11a-sim-2d.png`).
+  Copied to `docs/media/` (`sim-city.png`, `train-city.png`, refreshed `sim-2d.png`, `train-2d.png`).
+- Docs: README "AI navigation" (inputs, fitness, curriculum, the bundled brain's real numbers, what
+  it took, the traffic limitation), features, network diagram, evolution loop, testing, roadmap;
+  COMPARISON.md row 2; BACKLOG (traffic follow-up replaces the curriculum and city-brain items).
+
+#### Follow-up 1 acceptance
+
+| Item | Status | Evidence |
+| ---- | ------ | -------- |
+| Lane observation inputs (`observe`: lat, hdg, wp near, wp far, speed) | Done | `lane.test.ts` (signs, values, infinite road) |
+| Lane-discipline fitness, centre-line elimination, `inLaneFraction` | Done | `lane.test.ts` |
+| City training defaults, curriculum, spawn jitter, panel and HUD | Done | `curriculum.test.ts`, `a11y.spec.ts`, `phase-11b-train-2d.png` |
+| Pre-trained city brain: target reached, ≥ 95% in lane, no crash in ≥ 3 of 5 seeds | Done | 4 of 5 (`city.brain.json` training record, `pretrained.test.ts`) |
+| Simulate and Train mode use the city brain | Done | e2e `sim2d.spec.ts`, `training.spec.ts` |
+| A trained population drives the route in the right-hand lane and stops at the target | Done in validation; partly in open traffic | 4 of 5 validation drives, 5 of 20 unseen traffic seeds (see Known issues) |
+| Tests added, none weakened | Done | 28 new unit tests, 2 new e2e specs; two assertions follow spec-mandated renames (DECISIONS #88, #100); two benchmarks moved unchanged (#98) |
+| Commit per phase, tag v1.1.0 | Done | four commits after the v1.0.0 import |
+
 ## Known issues
 
-- The bundled brain is a highway weaver (rays only); in city worlds the Simulate demo car still
-  crashes at corners. AI navigation (F5) exists but does not yet learn turns (documented).
+- The city brain keeps its lane and takes every corner of Grid Town's route, but traffic is its weak
+  point: it does not see traffic lights, and on unseen traffic most drives end against the queue in
+  front of the signalised junction (5 of 20 unseen seeds reach the target; in a 5-minute Simulate
+  replay 2 of 17 laps). Training cannot teach queueing while learners are ghosts that traffic drives
+  into from behind (BACKLOG).
+- The bundled brains are trained for their worlds: the city brain for Grid Town's route, the highway
+  brain for the infinite road. Other city worlds get the city brain as a starting point for training.
 - A few windows still show a fine speckle in software rendering (SwiftShader texture filtering of
   the emissive mask); not seen in the hardware renderer.

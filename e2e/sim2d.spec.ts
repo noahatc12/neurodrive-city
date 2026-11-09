@@ -75,3 +75,76 @@ test('Simulate mode: traffic moves, the manual car drives with the keyboard', as
   await expect.poll(() => nd(page, () => window.__ND__.mode)).toBe('edit');
   expect(await simState(page)).toBeNull();
 });
+
+interface LaneHooks {
+  roadWidth: number;
+  path: number[];
+  from: number;
+  to: number;
+  cars: { x: number; y: number; damaged: boolean; eliminated: boolean }[];
+}
+
+/** Signed distance of (x, y) from the lane path, positive to the right of travel. */
+function signedLateral(path: readonly number[], x: number, y: number): number {
+  let best = Infinity;
+  let signed = 0;
+  for (let i = 0; i + 3 < path.length; i += 2) {
+    const ax = path[i] as number;
+    const ay = path[i + 1] as number;
+    const dx = (path[i + 2] as number) - ax;
+    const dy = (path[i + 3] as number) - ay;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+    const d = Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
+    if (d < best) {
+      best = d;
+      // right of a direction (dx, dy) in y-down space is (−dy, dx)
+      signed = (x - ax) * -dy + (y - ay) * dx < 0 ? -d : d;
+    }
+  }
+  return signed;
+}
+
+test('Simulate: the AI demo car follows the route right of the centre line', async ({ page }) => {
+  await page.goto('./');
+  await waitForApp(page);
+  await expect
+    .poll(() => nd(page, () => (window.__ND__ as unknown as { cityBrain: boolean }).cityBrain))
+    .toBe(true);
+  await page.evaluate(() => window.__ND__.actions.loadBundled('worlds/grid-town.world.json'));
+  await waitForGeometry(page);
+  await page.evaluate(() => window.__ND__.actions.setMode('simulate'));
+  const lane = (): Promise<LaneHooks | null> =>
+    page.evaluate(() => (window.__ND__ as unknown as { lane: LaneHooks | null }).lane);
+  await expect.poll(async () => (await lane())?.cars.length ?? 0).toBe(1);
+  // the demo car drives the bundled city brain (12 inputs)
+  await expect(page.locator('.nn-canvas')).toBeVisible();
+  const samples: { lat: number; x: number; y: number }[] = [];
+  const first = await lane();
+  expect(first).not.toBeNull();
+  const centreLine = -(first?.roadWidth ?? 100) / 4; // the lane centre is w/4 right of it
+  for (let k = 0; k < 40; k++) {
+    const l = await lane();
+    const car = l?.cars[0];
+    if (l && car) samples.push({ lat: signedLateral(l.path, car.x, car.y), x: car.x, y: car.y });
+    await page.waitForTimeout(250);
+  }
+  const worst = Math.min(...samples.map((s) => s.lat));
+  let travelled = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1];
+    const b = samples[i];
+    if (a && b) travelled += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  console.info(
+    `demo car over 10 s: ${samples.length} samples, ${travelled.toFixed(0)} units driven, lateral offset from ${worst.toFixed(1)} to ${Math.max(...samples.map((s) => s.lat)).toFixed(1)} (centre line at ${centreLine})`,
+  );
+  expect(samples.length).toBeGreaterThanOrEqual(30);
+  expect(travelled).toBeGreaterThan(300); // it actually drives
+  for (const s of samples) expect(s.lat).toBeGreaterThan(centreLine);
+  // follow the demo car (F) for the screenshot
+  await page.evaluate(() => window.__ND__.actions.run('view.focusBest'));
+  await expect.poll(() => nd(page, () => window.__ND__.focusCar?.kind ?? null)).toBe('ai');
+  await page.waitForTimeout(1200);
+  await shot(page, 'sim-city');
+});

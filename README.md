@@ -15,6 +15,8 @@ neuro-evolution, shown in a crisp 2D editor and a lit, bloomed 3D view.
 ![OSM import](docs/media/osm-import.png)
 
 More screenshots: [training in Grid Town](docs/media/train-2d.png),
+[the city brain driving the route](docs/media/sim-city.png),
+[route training with the curriculum](docs/media/train-city.png),
 [the OSM sample town in 3D](docs/media/osm-3d.png), [the infinite road](docs/media/infinite-road.png)
 and [the first-run tour](docs/media/tour.png). All of them are written by the Playwright specs.
 
@@ -51,14 +53,22 @@ and [the first-run tour](docs/media/tour.png). All of them are written by the Pl
 - Traffic lights cycle green, yellow and an all-red gap per junction, with fading lamps.
 
 ### Neural network and evolution
-- A fully-connected network written from scratch (step or tanh activation), default topology
-  [5, 6, 4]: five rays in, forward / left / right / reverse out.
+- A fully-connected network written from scratch (step or tanh activation). On the infinite road
+  the course homage [5, 6, 4]: five rays in, forward / left / right / reverse out. In cities
+  [12, 8, 4] with tanh: seven rays plus five route inputs (offset from the lane centre, heading
+  error, two waypoints ahead, speed), so the cars learn to follow a route in their own lane.
 - Hundreds of AI cars evolve at once: course-style selection (one elite) or tournament selection
-  with uniform crossover, elitism, stuck detection, seeded generations that replay identical
+  with uniform crossover and three elites, stuck detection, seeded generations that replay identical
   traffic, and per-generation best and average fitness in a sparkline.
+- Lane-discipline fitness in cities: progress counts only in the right-hand lane, and more than a
+  second over the centre line eliminates a car. A route curriculum starts with the first straight
+  and grows the route corner by corner; the HUD shows "In lane" and the route preview turns green,
+  amber or red with the focused car's lane position.
 - A live network visualizer shows the focused car's brain firing, with hover explanations.
 - Turbo training runs evolution in a Web Worker at full CPU speed and hands back the best brain.
-- A pre-trained brain ships in `public/brains/`, trained with the app's own headless trainer.
+- Two pre-trained brains ship in `public/brains/`, both trained with the app's own headless
+  trainer: a highway brain for the infinite road and a city brain that drives Grid Town's route
+  (it drives the Simulate demo car and seeds city training).
 - The classic infinite road (straight or curvy) as a training mode.
 
 ### 3D renderer
@@ -118,18 +128,20 @@ fully described by its graph, settings and seed.
 
 ```mermaid
 flowchart LR
-  R0[ray 0] --> H[6 hidden neurons]
-  R1[ray 1] --> H
-  R2[ray 2] --> H
-  R3[ray 3] --> H
-  R4[ray 4] --> H
+  R[7 rays over 150 degrees] --> H[8 hidden neurons]
+  L[lat: offset from the lane centre] --> H
+  D[hdg: heading error] --> H
+  N[wp near: route 60 units ahead] --> H
+  W[wp far: route 160 units ahead] --> H
+  S[speed] --> H
   H --> F[forward]
   H --> Le[left]
   H --> Ri[right]
   H --> Re[reverse]
 ```
 
-Each level computes `sum = Σ input × weight`, then the step activation fires when `sum > bias`
+That is the city network ([12, 8, 4], tanh); the infinite road keeps the course's five rays and
+six hidden neurons. Each level computes `sum = Σ input × weight`, then the step activation fires when `sum > bias`
 (the course's binary controls) or tanh gives proportional outputs. A ray reading is
 `1 − distance / length` of its nearest hit, so 0 means clear and values near 1 mean an obstacle
 is close.
@@ -143,14 +155,15 @@ flowchart TD
   Fit --> Sel{Selection}
   Sel -->|course| C[Copy the elite, mutate everyone else]
   Sel -->|tournament| T[Pick parents from the top k, uniform crossover, mutate]
-  C --> E[Elitism: the best brain ever seen survives unchanged]
+  C --> E[Elitism: the generation's best brains survive unchanged; car 0 re-runs the elite]
   T --> E
   E --> P
 ```
 
 Mutation moves every weight and bias toward a fresh random value by `amount` (0 is the identity,
 1 is fully random). Each generation replays the same traffic and light phases, so generations
-are compared fairly.
+are compared fairly; the elite re-runs every generation, so in a world without spawn jitter it
+reproduces its score and the best never gets worse.
 
 ### Routing: A* plus pure pursuit
 
@@ -181,22 +194,62 @@ instead, and the test or file that proves it. In short:
   budgets.
 - The code is strict TypeScript with unit tests, end-to-end tests, lint and CI.
 
-## AI navigation results (honest)
+## AI navigation
 
-The AI navigation toggle (Train mode, city worlds) adds two inputs to the network: the signed
-angle to the next route waypoint and the normalised speed. Headless runs in Grid Town
-(`node scripts/train-nav.ts`, 200 to 400 cars, 40 to 80 generations) did not learn the first turn:
+In a city with a Start and a Target, AI cars learn to drive the lane route between them, in the
+right-hand lane, and to stop at the Target. Since v1.1 a pre-trained city brain does this out of
+the box: it drives the Simulate demo car and seeds Train mode in city worlds.
 
-| Activation | Inputs            | Best progress along the route |
-| ---------- | ----------------- | ----------------------------- |
-| step       | rays only         | 28%                           |
-| step       | rays + navigation | 28%                           |
-| tanh       | rays only         | 7%                            |
-| tanh       | rays + navigation | 24%                           |
+**What the network sees.** Seven rays over 150° reaching 200 units, plus five route inputs
+measured against the lane path: `lat` (signed offset from the lane centre, ±1 at a quarter road
+width; negative is toward oncoming traffic), `hdg` (heading error against the lane, ±1 at 90°),
+`wp near` and `wp far` (signed angles to the lane 60 and 160 units ahead) and `speed`.
 
-So the navigation inputs help with proportional steering, but a fixed [7, 6, 4] network trained
-this way stops at the first corner. The demo keeps route-following traffic (A* plus pure
-pursuit), and curriculum training is on the roadmap.
+**What it is rewarded for.** Progress along the route, credited per step by how well the car keeps
+its lane: full credit within 0.15 road widths of the lane centre, falling to a quarter at 0.35 and
+nothing beyond. More than one second with the car's centre over the centre line eliminates it (and
+costs 20% of its fitness, like a crash); driving the wrong way earns nothing; reaching the end of
+the route adds its length again and freezes the car there.
+
+**How it learns corners.** Every car starts at the one Start, so no car sees a corner until the
+straight is solved. The curriculum evaluates only the first 320 units of the route, then 260 more
+whenever 10% of the cars (or the best car twice in a row) reach the end, so the population solves
+the straight, then each corner in turn. Spawn positions jitter by ±8% of a road width and ±4°, so
+no brain can memorise one exact trajectory. The training panel shows "Stage k · route x%".
+
+**The bundled city brain** (`public/brains/city.brain.json`, [12, 8, 4] tanh) was trained in Grid
+Town with `npm run train:city -- --seed 12 --mutation 0 --vary-traffic --stuck 30 --time 90 --until 4`:
+300 cars, 105 generations, 230 s on one CPU core. It covered the whole 555 m route (5548 units,
+nine corners, a signalised junction and an all-way stop) at generation 88. Validation drives one
+exact copy alone among 14 traffic cars:
+
+| Check | Result |
+| ----- | ------ |
+| 5 validation seeds (the bar: 3 of 5 reach the Target with no crash and at least 95% in lane) | 4 of 5 passed: arrived in 35.8 to 36.9 s with 99.3 to 100% of the time in lane; the fifth crashed into traffic at 28% of the route |
+| 20 unseen traffic seeds | 5 reached the Target; 15 crashed into traffic; 0 lane violations; 99.4% of the time in lane on average |
+| Simulate mode for 5 minutes (traffic never resets) | Arrived on 2 of 17 laps; never more than 15.9 units left of the lane centre (the centre line is 25 units away) |
+
+So the lane discipline is solid and every corner is taken, but traffic is the weak point: the
+network does not see traffic lights, and most failed drives end against the queue in front of the
+signalised junction. Training cannot teach queueing yet, because the 300 learners are ghosts that
+traffic does not see, and a ghost waiting in a queue gets driven into from behind. The
+[backlog](BACKLOG.md) has the fix and a traffic-light input.
+
+**What it took** (seeded runs, 300 cars; details in [PROGRESS.md](PROGRESS.md)):
+
+| Setup | Result in Grid Town |
+| ----- | ------------------- |
+| v1.0: rays plus waypoint angle and speed, progress within 0.45 road widths | stopped at the first corner (at most 28% of the route) |
+| v1.1 inputs and fitness, tournament selection, best-ever elite | braked for the first left turn but never steered left |
+| course selection | reached the second left turn, then stalled for 100+ generations: the elite's score from the previous curriculum stage could not be beaten |
+| elite re-evaluated every generation, its bar reset per stage | with mutation 0.05 to 0.12 still stuck at the first corner for 150 to 250 generations (8 seeds); crossover alone (mutation 0) reached the Target in about 100 |
+| one replayed traffic pattern | 98% in lane, but 1 of 20 unseen traffic seeds passed (it rear-ended stopped traffic) |
+| a new traffic seed every generation, waiting up to 30 s allowed | the shipped brain (5 of 20) |
+
+Train mode keeps the spec's city defaults (tournament selection, mutation 0.12, 5 s stuck timeout,
+60 s generations); the headless trainer's settings above are training choices, recorded in
+[DECISIONS.md](DECISIONS.md) (#101 to #105). For comparison, the scripted route follower that drives
+the traffic scores 100% in lane on the same route and arrives in 43.9 s.
 
 ## Controls
 
@@ -234,7 +287,7 @@ GPUs do much better):
 
 | Budget | Measured |
 | ------ | -------- |
-| Simulation step for 300 cars with 5 rays: at most 4 ms | 1.6 ms (Vitest benchmark) |
+| Simulation step for 300 cars with 5 rays: at most 4 ms | 1.2 to 2.7 ms (Vitest benchmark, run alone) |
 | 2D frame, demo city with traffic | 16.9 ms frame, 1.4 ms render (headless) |
 | 2D Train with 300 AI cars plus traffic | 2.8 ms render, 3.1 ms simulation per frame |
 | 3D draw calls in the demo city: at most 150 | 77 by day (shadows and bloom on High), 65 at night |
@@ -255,10 +308,11 @@ npm run e2e            # Playwright against a production build under /neurodrive
 npm run verify         # typecheck, lint, test, build, e2e
 ```
 
-![coverage](https://img.shields.io/badge/engine%20line%20coverage-97.7%25-brightgreen) _(static badge; refresh it from `npm run test:coverage`)_
+![coverage](https://img.shields.io/badge/engine%20line%20coverage-98.0%25-brightgreen) _(static badge; refresh it from `npm run test:coverage`)_
 
-At v1.0.0: 240 unit tests in 27 files, engine line coverage 97.7% (math 100%, graph 99.3%, world
-99.8%, car 100%), and 24 end-to-end specs.
+At v1.1.0: 268 unit tests in 31 files, engine line coverage 98.0%, and 26 end-to-end specs. The
+wall-clock benchmarks run alone after every other test file, so they measure the code rather than
+a busy CPU.
 
 End-to-end specs check zero console errors on every page, non-blank canvases (pixel variance), the
 editor, saving and loading, OSM import, simulation, training, turbo training, the 3D view by day
@@ -288,7 +342,7 @@ as `docs/media/demo.gif`.
 - NEAT (evolving topologies) and a reinforcement-learning baseline to compare against.
 - Curved (Bezier) roads and per-segment lane counts.
 - Pedestrians on zebra crossings.
-- Curriculum training for the AI navigation mode.
+- AI navigation in traffic: queueing at lights and a traffic-light input (see the backlog).
 
 ## Acknowledgements
 

@@ -61,6 +61,7 @@ import type { SimHost } from '../engine/sim/host.ts';
 import type { Car } from '../engine/car/car.ts';
 import { DEFAULT_CITY_SENSOR, Sensor, type SensorConfig } from '../engine/car/sensor.ts';
 import type { ThreeRenderer } from '../render3d/threeRenderer.ts';
+import { VALIDATION_STUCK } from '../engine/ai/trainer.ts';
 import type { TrainerRequest, TrainerResponse } from '../workers/protocol.ts';
 import { CameraChips, nextCameraMode } from '../ui/cameraChips.ts';
 import { Tour, tourDone } from '../ui/tour.ts';
@@ -190,7 +191,10 @@ export class App {
   /** Curriculum horizon handed back by the last turbo run (the next population starts there). */
   private turboHorizon = 0;
   savedBrain: LoadedBrain | null = null;
+  /** Bundled infinite-road brain (rays only): seeds the infinite road. */
   pretrained: LoadedBrain | null = null;
+  /** Bundled city brain (route inputs): drives the Simulate demo car and seeds city training. */
+  cityBrain: LoadedBrain | null = null;
   /** In Simulate mode: follow the AI demo car instead of your car. */
   focusAi = false;
   /** Bumped to force a fresh simulation (Reset, brain import). */
@@ -698,12 +702,17 @@ export class App {
     return this.infinite ? this.evo.road : this.evo.city;
   }
 
-  /**
-   * Sensors of the population being built: the city sensor when training in a city, the
-   * course homage sensor on the infinite road and for the Simulate-mode demo car.
-   */
+  /** Sensors of the population: the city sensor in cities, the course homage on the infinite road. */
   private popSensor(): Partial<SensorConfig> {
-    return this.mode === 'train' && !this.infinite ? { ...DEFAULT_CITY_SENSOR } : {};
+    return this.infinite ? {} : { ...DEFAULT_CITY_SENSOR };
+  }
+
+  /** True when the world has a Start and an active Target (a route to follow). */
+  private hasRoute(): boolean {
+    return (
+      this.model.markings.ofType('start').length > 0 &&
+      activeTarget(this.model.markings.ofType('target')) !== null
+    );
   }
 
   /** Number of sensor rays population cars use in the current world. */
@@ -745,13 +754,36 @@ export class App {
     return b && brainFits(b.net, inputs, b.inputs) ? b : null;
   }
 
+  /**
+   * The brain that seeds a training population: the turbo hand-back, else the saved brain,
+   * else the bundled brain for this kind of world (the city brain in cities, the
+   * infinite-road brain on the infinite road), whichever first fits the inputs.
+   */
   private seedBrain(): LoadedBrain | null {
     const inputs = inputNames(this.rayCount(), this.navActive ? NAV_INPUTS : []);
     return (
       this.fitting(this.turboBrain, inputs) ??
       this.fitting(this.savedBrain, inputs) ??
-      this.fitting(this.pretrained, inputs)
+      this.fitting(this.infinite ? this.pretrained : this.cityBrain, inputs)
     );
+  }
+
+  /**
+   * The Simulate-mode demo car's brain and whether it uses the route inputs: with a Start
+   * and an active Target, the bundled city brain; otherwise (or if it does not fit) the
+   * saved brain if it fits the city sensors; otherwise none (a random network).
+   */
+  private demoBrain(): { brain: LoadedBrain | null; nav: boolean } {
+    const layouts = this.layouts();
+    if (this.hasRoute()) {
+      const city = this.cityBrain;
+      if (city && fitLayout(city.net, city.inputs, layouts)?.nav) return { brain: city, nav: true };
+    }
+    const saved = this.savedBrain;
+    const layout = saved ? fitLayout(saved.net, saved.inputs, layouts) : null;
+    if (saved && layout && (this.hasRoute() || !layout.nav))
+      return { brain: saved, nav: layout.nav };
+    return { brain: null, nav: this.hasRoute() };
   }
 
   /** Evolution settings for a training population in the current world. */
@@ -795,20 +827,28 @@ export class App {
         trafficCount: 14,
         manual: !train,
         seed: this.model.seed,
+        // the single demo car is a real road user; the training population are ghosts
+        carCarCollisions: !train,
       });
+      const demo = train ? null : this.demoBrain();
       const pop = new Population(
         sim,
         train
           ? evo
-          : {
+          : cityEvolution({
               population: 1,
               mutation: 0,
               timeLimit: 120,
-              stuckTimeout: 8,
+              // may wait behind a queue at a red light, like a validation drive
+              stuckTimeout: VALIDATION_STUCK,
               seed: 1,
               resetWorldEachGeneration: false,
-            },
-        seed,
+              navInputs: demo?.nav ?? false,
+              curriculum: false,
+              jitterLateral: 0,
+              jitterHeading: 0,
+            }),
+        train ? seed : (demo?.brain?.net ?? null),
       );
       sim.setExtension(pop);
       this.sim = sim;
@@ -954,6 +994,8 @@ export class App {
       return 'Seeded from the best turbo brain (car 0 keeps it exactly).';
     if (seed && seed === this.savedBrain)
       return 'Saved brain: seeds generation 0 (car 0 keeps it exactly).';
+    if (seed && seed === this.cityBrain)
+      return 'Using the bundled city brain as the seed (car 0 keeps it exactly).';
     if (seed && seed === this.pretrained) return 'Using the bundled pre-trained brain as the seed.';
     return this.savedBrain
       ? 'The saved brain does not fit these inputs: generation 0 starts random.'
@@ -1102,17 +1144,29 @@ export class App {
 
   // --- brains -----------------------------------------------------------------
 
-  /** Loads the bundled pre-trained brain (public/brains) as the fallback training seed. */
+  /**
+   * Loads the bundled brains (public/brains): the infinite-road brain and the city brain.
+   * A Simulate session already running restarts so its demo car picks the city brain up.
+   */
   private async loadPretrained(): Promise<void> {
-    try {
-      const res = parseBrain(JSON.parse(await this.fetchText('brains/pretrained.brain.json')));
-      if (res.ok) {
-        this.pretrained = { net: res.net, inputs: res.file.inputs };
-        this.syncTrainingPanel();
-      } else console.warn('bundled brain rejected', res.errors);
-    } catch (e) {
-      console.warn('could not load the bundled brain', e);
-    }
+    const load = async (path: string): Promise<LoadedBrain | null> => {
+      try {
+        const res = parseBrain(JSON.parse(await this.fetchText(path)));
+        if (res.ok) return { net: res.net, inputs: res.file.inputs };
+        console.warn(`bundled brain ${path} rejected`, res.errors);
+      } catch (e) {
+        console.warn(`could not load the bundled brain ${path}`, e);
+      }
+      return null;
+    };
+    const [road, city] = await Promise.all([
+      load('brains/pretrained.brain.json'),
+      load('brains/city.brain.json'),
+    ]);
+    this.pretrained = road;
+    this.cityBrain = city;
+    if (city && this.mode === 'simulate' && !this.infinite) this.simGen++;
+    this.syncTrainingPanel();
   }
 
   private loadSavedBrain(): void {
@@ -2182,6 +2236,9 @@ export class App {
               bestEver: pop.bestEverFitness,
               history: pop.history.map((r) => ({ ...r })),
               infinite: this.infinite !== null,
+              inLane: pop.inLaneFraction(pop.bestIndex),
+              stage: pop.stage,
+              horizon: pop.horizon,
             }
           : null;
       },
@@ -2233,6 +2290,29 @@ export class App {
             }
           : { running: false, adopted: this.turboBrain !== null },
       pretrained: () => this.pretrained !== null,
+      cityBrain: () => this.cityBrain !== null,
+      /** The route preview and the AI cars, for lane checks in e2e specs. */
+      lane: () => {
+        const pop = this.population;
+        const r = this.simRoute;
+        if (!pop || !r) return null;
+        return {
+          roadWidth: this.model.settings.roadWidth,
+          path: Array.from(r.path.xy),
+          from: r.from,
+          to: r.to,
+          stats: this.laneStats(),
+          cars: pop.cars.map((c, i) => ({
+            x: c.x,
+            y: c.y,
+            angle: c.angle,
+            speed: c.speed,
+            damaged: c.damaged,
+            eliminated: pop.eliminated[i] === 1,
+            inLane: pop.inLaneFraction(i),
+          })),
+        };
+      },
       focusCar: () => {
         const id = this.frameCtx.focusCarId;
         const c = id !== null ? this.sim?.getCar(id) : undefined;
