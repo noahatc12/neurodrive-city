@@ -59,6 +59,15 @@ export class CollisionWorld {
   private readonly hit: RayHit = { offset: 1, kind: HIT_NONE, carId: -1 };
   private readonly isect: Intersection = { x: 0, y: 0, offset: 0, u: 0 };
 
+  /** Id of the car the last {@link polygonHit} returning HIT_CAR touched (−1 before any). */
+  lastHitCarId = -1;
+
+  /** True when car `id` is in the dynamic set (a real road user others can see and hit). */
+  hasDynamic(id: number): boolean {
+    for (let d = 0; d < this.dynCount; d++) if (this.dynIds[d] === id) return true;
+    return false;
+  }
+
   /** Replaces the dynamic obstacle set with the given cars (copied, allocation-free once warm). */
   setDynamic(cars: readonly Car[], count: number, include: (c: Car) => boolean): void {
     if (count > this.cap) this.grow(count);
@@ -190,8 +199,10 @@ export class CollisionWorld {
             q[o + k2] as number,
             q[o + k2 + 1] as number,
           )
-        )
+        ) {
+          this.lastHitCarId = this.dynIds[d] as number;
           return HIT_CAR;
+        }
       }
     }
     return HIT_NONE;

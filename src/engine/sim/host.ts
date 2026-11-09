@@ -10,8 +10,8 @@ import type { SpawnPose } from '../markings/start.ts';
 import type { Rng } from '../math/rng.ts';
 import type { Particles, SkidMarks } from './particlesSim.ts';
 
-/** Number of values {@link ProgressTracker.observe} writes. */
-export const OBSERVATION_SIZE = 5;
+/** Number of values {@link ProgressTracker.observe} writes (the five route inputs, then the light). */
+export const OBSERVATION_SIZE = 6;
 
 /** Measures how far each car has progressed: the basis of fitness. */
 export interface ProgressTracker {
@@ -27,13 +27,19 @@ export interface ProgressTracker {
    * `out[0..4]`: `lat` (signed offset from the lane centre, negative toward oncoming
    * traffic), `hdg` (heading error against the lane, positive when the car points left
    * of it), `wpNear` and `wpFar` (signed angles to the lane 60 and 160 units ahead,
-   * positive to the left) and `speed` (fraction of max speed). Optional.
+   * positive to the left) and `speed` (fraction of max speed); then `out[5]` = `light`, the
+   * proximity (0..1) of the next red or yellow light on the route (0 when it is green, far
+   * or there is none). Writes past the end of a shorter `out` are ignored. Optional.
    */
   observe?(i: number, car: Car, out: Float64Array): void;
   /** True once car `i` reached the destination (if the tracker has one). */
   finished?(i: number): boolean;
   /** True once car `i` has spent too long over the centre line (eliminate it). */
   laneViolation?(i: number): boolean;
+  /** True once car `i` crossed a stop line on red. */
+  redLightViolation?(i: number): boolean;
+  /** True while a red or yellow light on car `i`'s route is close ahead (a reason to wait). */
+  stopAhead?(i: number): boolean;
   /** Seconds car `i` spent fully in its lane ÷ seconds alive (NaN before the first step). */
   inLaneFraction?(i: number): number;
   /** Lane credit factor of car `i` at its last step: 1 in lane, 0 off it. */

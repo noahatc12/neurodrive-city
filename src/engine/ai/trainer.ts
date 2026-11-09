@@ -16,6 +16,7 @@ import { inputNames, serializeBrain, type BrainFile } from './brainSchema.ts';
 import { RouteProgress } from './fitness.ts';
 import {
   NAV_INPUTS,
+  routeInputNames,
   Population,
   cityEvolution,
   type EvolutionConfig,
@@ -25,6 +26,9 @@ import type { NeuralNetwork } from './network.ts';
 
 /** Fixed simulation step (s). */
 export const TRAIN_DT = 1 / 60;
+
+/** Rays of the city sensor. */
+const CITY_RAYS = new Sensor(cityEvolution().sensor).rayCount;
 
 /** Spawn jitter of city training, as plain numbers (road widths, radians). */
 const CITY_JITTER = Object.freeze({
@@ -65,14 +69,18 @@ export class HeadlessTrainer {
   brainFile(world: string, date = new Date().toISOString()): BrainFile {
     const pop = this.population;
     const rays = new Sensor(pop.config.sensor).rayCount;
-    return serializeBrain(pop.bestEver, inputNames(rays, pop.config.navInputs ? NAV_INPUTS : []), {
-      generations: pop.generation,
-      bestFitness: Math.round(pop.bestEverFitness * 10) / 10,
-      world,
-      mutation: pop.config.mutation,
-      date,
-      population: pop.cars.length,
-    });
+    return serializeBrain(
+      pop.bestEver,
+      inputNames(rays, pop.config.navInputs ? routeInputNames(pop.config.lightInput) : []),
+      {
+        generations: pop.generation,
+        bestFitness: Math.round(pop.bestEverFitness * 10) / 10,
+        world,
+        mutation: pop.config.mutation,
+        date,
+        population: pop.cars.length,
+      },
+    );
   }
 }
 
@@ -105,6 +113,8 @@ export interface CityValidation {
   crashed: boolean;
   /** Eliminated for more than 1 s over the centre line. */
   laneViolation: boolean;
+  /** Eliminated for crossing a stop line on red (brains with the light input). */
+  redLight: boolean;
   /** Seconds fully in lane ÷ seconds driven. */
   inLane: number;
   /** Share of the route covered (furthest point reached ÷ route length). */
@@ -117,7 +127,7 @@ export const CITY_PASS = Object.freeze({ inLane: 0.95 });
 
 /** True when a validation drive reached the target cleanly and in lane. */
 export function cityDrivePassed(v: CityValidation): boolean {
-  return v.arrived && !v.crashed && !v.laneViolation && v.inLane >= CITY_PASS.inLane;
+  return v.arrived && !v.crashed && !v.laneViolation && !v.redLight && v.inLane >= CITY_PASS.inLane;
 }
 
 /** Seconds without progress before a validation drive counts as stopped (above a full light cycle). */
@@ -157,6 +167,9 @@ export function validateCityBrain(
       seed: Math.max(1, jitterSeed),
       jitterLateral: jitterSeed > 0 ? CITY_JITTER.lateral : 0,
       jitterHeading: jitterSeed > 0 ? CITY_JITTER.heading : 0,
+      // the layout follows the brain: rays only, route inputs, or route inputs and the light
+      navInputs: net.inputCount > CITY_RAYS,
+      lightInput: net.inputCount > CITY_RAYS + NAV_INPUTS.length,
     }),
     net,
   );
@@ -176,8 +189,59 @@ export function validateCityBrain(
     arrived: t.finished?.(0) ?? false,
     crashed: car?.damaged ?? true,
     laneViolation: t.laneViolation?.(0) ?? false,
+    redLight: pop.config.lightInput && (t.redLightViolation?.(0) ?? false),
     inLane: Number.isNaN(fraction) ? 0 : fraction,
     routeShare: Number.isFinite(len) && len > 0 ? Math.min(1, reach / len) : 0,
     seconds: k * TRAIN_DT,
   };
+}
+
+/** Summary of {@link broadCityCheck}: many validation drives on unseen traffic. */
+export interface BroadCheck {
+  drives: number;
+  /** Drives that passed ({@link cityDrivePassed}). */
+  passes: number;
+  arrived: number;
+  crashed: number;
+  violations: number;
+  redLights: number;
+  /** Mean in-lane fraction and mean share of the route covered. */
+  inLane: number;
+  routeShare: number;
+}
+
+/** First traffic seed of the broad check (never used for training or the 5-seed validation). */
+export const BROAD_SEED = 5000;
+
+/**
+ * Drives a city brain on `count` unseen traffic seeds ({@link BROAD_SEED} + k; every other
+ * drive with spawn jitter) and summarises the results.
+ */
+export function broadCityCheck(
+  model: WorldModel,
+  geometry: WorldGeometry,
+  net: NeuralNetwork,
+  count = 20,
+): BroadCheck {
+  const sum: BroadCheck = {
+    drives: count,
+    passes: 0,
+    arrived: 0,
+    crashed: 0,
+    violations: 0,
+    redLights: 0,
+    inLane: 0,
+    routeShare: 0,
+  };
+  for (let k = 0; k < count; k++) {
+    const v = validateCityBrain(model, geometry, net, BROAD_SEED + k, k % 2 === 1 ? 7000 + k : 0);
+    if (cityDrivePassed(v)) sum.passes++;
+    if (v.arrived) sum.arrived++;
+    if (v.crashed) sum.crashed++;
+    if (v.laneViolation) sum.violations++;
+    if (v.redLight) sum.redLights++;
+    sum.inLane += v.inLane / count;
+    sum.routeShare += v.routeShare / count;
+  }
+  return sum;
 }

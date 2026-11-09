@@ -169,14 +169,27 @@ export function brainFits(
 export interface InputLayout {
   /** True when the layout includes the route inputs. */
   nav: boolean;
+  /** True when it also includes the extra inputs after them (the traffic-light input). */
+  light?: boolean;
   inputs: string[];
 }
 
-/** The layouts for `rayCount` rays: with the route inputs first, then rays only. */
-export function inputLayouts(rayCount: number, navInputs: readonly string[]): InputLayout[] {
+/**
+ * The layouts for `rayCount` rays: with the route inputs first, then rays only. With
+ * `extra` (the light input) the layout with the route inputs plus `extra` comes first.
+ */
+export function inputLayouts(
+  rayCount: number,
+  navInputs: readonly string[],
+  extra: readonly string[] = [],
+): InputLayout[] {
+  const nav = { nav: true, light: false, inputs: inputNames(rayCount, navInputs) };
+  const plain = { nav: false, light: false, inputs: inputNames(rayCount) };
+  if (extra.length === 0) return [nav, plain];
   return [
-    { nav: true, inputs: inputNames(rayCount, navInputs) },
-    { nav: false, inputs: inputNames(rayCount) },
+    { nav: true, light: true, inputs: inputNames(rayCount, [...navInputs, ...extra]) },
+    nav,
+    plain,
   ];
 }
 
@@ -195,10 +208,10 @@ export function layoutMismatch(
   names: readonly string[],
   layouts: readonly InputLayout[],
 ): string {
-  const nav = layouts.find((l) => l.nav);
+  const nav = layouts.filter((l) => l.nav).map((l) => l.inputs.length);
   const plain = layouts.find((l) => !l.nav);
   const counts = [
-    nav ? `${nav.inputs.length} inputs with route inputs` : null,
+    nav.length > 0 ? `${nav.join(' or ')} inputs with route inputs` : null,
     plain ? `${plain.inputs.length} without` : null,
   ]
     .filter((x) => x !== null)

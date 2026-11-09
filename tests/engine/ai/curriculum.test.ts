@@ -284,10 +284,11 @@ describe('ai/elites and spawn jitter', () => {
 });
 
 describe('ai/city training defaults', () => {
-  it('route inputs, 7 rays over 5π/6 reaching 200, tanh [12, 8, 4], tournament with 3 elites', () => {
+  it('route and light inputs, 7 rays over 5π/6 reaching 200, tanh [13, 8, 4], tournament with 3 elites', () => {
     expect(DEFAULT_CITY_SENSOR).toEqual({ rayCount: 7, spread: (5 * Math.PI) / 6, length: 200 });
     expect(CITY_EVOLUTION).toMatchObject({
       navInputs: true,
+      lightInput: true,
       activation: 'tanh',
       hidden: [8],
       selection: 'tournament',
@@ -308,7 +309,11 @@ describe('ai/city training defaults', () => {
     });
     const pop = new Population(sim, cityEvolution({ population: 10, seed: 2 }));
     sim.setExtension(pop);
-    expect(pop.topology).toEqual([12, 8, 4]);
+    // 7 rays + 5 route inputs + the light input (v1.2; DECISIONS #108)
+    expect(pop.topology).toEqual([13, 8, 4]);
+    // without the light input: the v1.1 layout
+    const noLight = new Population(sim, cityEvolution({ population: 2, lightInput: false }));
+    expect(noLight.topology).toEqual([12, 8, 4]);
     expect(pop.sensors[0]?.config).toEqual(DEFAULT_CITY_SENSOR);
     expect(pop.brains[0]?.activation).toBe('tanh');
     expect(pop.config.elite).toBe(3);

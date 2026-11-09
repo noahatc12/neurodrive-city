@@ -21,6 +21,8 @@ Status of every phase, the next step, known issues, and gate evidence.
 | 11b   | Follow-up 1 B: city training defaults, curriculum, jitter, HUD     | done        |
 | 11c   | Follow-up 1 C: headless city training, shipped city brain          | done        |
 | 11d   | Follow-up 1 D: Simulate seed, e2e, docs (tag v1.1.0)               | done        |
+| 11e   | Follow-up 2 E: ghost fault rule, light input, red-light rule, waits | done        |
+| 11f   | Follow-up 2 F: retrained city brain, app, e2e, docs (tag v1.2.0)   | in progress |
 
 **Next:** v1.1.0 is complete (follow-up 1: lane discipline and AI navigation that follows the
 route). The open problem is traffic: see "Known issues" and `BACKLOG.md`.
@@ -562,6 +564,34 @@ final Definition of Done audit. Tag `v1.0.0`.
 | A trained population drives the route in the right-hand lane and stops at the target | Done in validation; partly in open traffic | 4 of 5 validation drives, 5 of 20 unseen traffic seeds (see Known issues) |
 | Tests added, none weakened | Done | 28 new unit tests, 2 new e2e specs; two assertions follow spec-mandated renames (DECISIONS #88, #100); two benchmarks moved unchanged (#98) |
 | Commit per phase, tag v1.1.0 | Done | four commits after the v1.0.0 import |
+
+### Follow-up 2, phase E (2026-11-08): ghost fault rule, light input, red-light rule, waits
+
+Follow-up 2 takes up the traffic item v1.1 left in the backlog: a city brain that keeps its lane
+but runs into queues at the signalised junction.
+
+- `npm run verify`: typecheck 0, lint 0, 32 test files / 279 tests, build OK (initial chunk 261.88 kB,
+  gzip 84.82 kB), e2e 26 passed (5.5 min). A first run failed 3 e2e specs: city populations default
+  to the light input (13 inputs), so the bundled v1.1 brain (12) no longer seeded Train mode or
+  drove the demo car; the app now picks each population's layout from the brain it loads
+  (DECISIONS #112).
+- Delivered: `CollisionWorld.lastHitCarId` and `hasDynamic`; population cars are damaged only by
+  what they drive into while they are ghosts (#109); the `light` input (#108) and the red-light rule
+  (#111) from the route's stop lines and the simulation's lights; standing behind a car or at a red
+  or yellow light does not run the stuck timer (#110); `inputLayouts(rays, route, [light])`;
+  `routeInputNames`; validation drives record red-light runs; `broadCityCheck` (20 unseen traffic
+  seeds by default).
+- Tests added (`tests/engine/ai/traffic.test.ts`, 11): the collision world reports the car it hit;
+  a waiting ghost is not damaged by traffic driving into its back, a ghost driving into a standing
+  car is, and a real road user counts every contact; the light signal (proximity of a red or yellow
+  light within 250 units, 0 when green or far); crossing on red is a violation, on yellow or green
+  it is not; a light-aware car running a red light is eliminated with fitness × 0.8, a car without
+  the light input is not judged by it; standing at a red light or behind a car does not run the
+  stuck timer, standing for no reason does; layouts with and without the light; Grid Town's route
+  passes one signalised junction.
+- Changed assertion: the city-defaults test expects [13, 8, 4] and also checks [12, 8, 4] with the
+  light input off (#108).
+- Screenshots `phase-11e-*`: as 11d (the bundled brain is still v1.1's; phase F replaces it).
 
 ## Known issues
 

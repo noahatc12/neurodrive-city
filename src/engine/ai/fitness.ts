@@ -25,11 +25,17 @@
  * means the car's centre is over the centre line; more than 1 s of that is a lane
  * violation (the population eliminates the car like a crash).
  *
+ * Traffic lights on the route. The tracker knows the stop lines of the lights the route
+ * passes, in arc order. Its `light` observation is the proximity of the next one when it
+ * is red or yellow (1 at the line, 0 at {@link LIGHT_RANGE} units or when green), and a car
+ * whose front crosses a line while it is red has run a red light.
+ *
  * All per-car state lives in preallocated typed arrays: updating allocates nothing.
  *
  * @module engine/ai/fitness
  */
 import type { Car } from '../car/car.ts';
+import type { LightColor } from '../markings/light.ts';
 import { pointAt, projectOnPathSigned, type LanePath } from '../nav/lanePath.ts';
 import { OBSERVATION_SIZE, type ProgressTracker } from '../sim/host.ts';
 
@@ -44,6 +50,8 @@ export const ONCOMING_LIMIT = 1.0;
 /** Look-ahead distances along the lane for the two waypoint inputs (units). */
 export const WP_NEAR = 60;
 export const WP_FAR = 160;
+/** Distance ahead (units) within which a red or yellow light shows in the `light` input. */
+export const LIGHT_RANGE = 250;
 /** Arrival counts this close (units) to the end of the evaluated route. */
 const ARRIVE = 25;
 /** Below this speed (units/s) a car is not "moving" for the wrong-way rule. */
@@ -73,6 +81,17 @@ function headingError(car: Car, tx: number, ty: number): number {
   const fx = -Math.sin(car.angle);
   const fy = -Math.cos(car.angle);
   return Math.atan2(ty * fx - tx * fy, tx * fx + ty * fy);
+}
+
+/** A traffic light's stop line on a route: the light marking's id and the line's arc position. */
+export interface RouteLight {
+  id: number;
+  arc: number;
+}
+
+/** Where the tracker reads light colours (the simulation's traffic light system). */
+export interface LightSource {
+  colorOf(lightId: number): LightColor;
 }
 
 /** The lanes of the infinite road, as {@link AxisProgress} needs them. */
@@ -144,6 +163,7 @@ export class AxisProgress implements ProgressTracker {
     out[2] = angleTo(car, this.laneX(k, yn) - car.x, yn - car.y);
     out[3] = angleTo(car, this.laneX(k, yf) - car.x, yf - car.y);
     out[4] = car.speed / car.config.maxSpeed;
+    out[5] = 0; // no traffic lights on the infinite road
   }
 
   /**
@@ -178,11 +198,27 @@ export class RouteProgress implements ProgressTracker {
   private readonly aliveTime: Float64Array;
   private readonly inLaneTime: Float64Array;
   private readonly factor: Float64Array;
+  /** Stop lines of the route's lights, in arc order. */
+  private readonly lightIds: Int32Array;
+  private readonly lightArcs: Float64Array;
+  private readonly lights: LightSource | null;
+  /** Per car: index of the next light not yet crossed, red-light runs, last light signal. */
+  private readonly nextLight: Int32Array;
+  private readonly redRun: Uint8Array;
+  private readonly signal: Float64Array;
   private readonly proj = new Float64Array(4);
   private readonly pt = new Float64Array(2);
   private readonly obs = new Float64Array(OBSERVATION_SIZE);
 
-  constructor(capacity: number, path: LanePath, sStart: number, sEnd: number, roadWidth: number) {
+  constructor(
+    capacity: number,
+    path: LanePath,
+    sStart: number,
+    sEnd: number,
+    roadWidth: number,
+    lights: readonly RouteLight[] = [],
+    source: LightSource | null = null,
+  ) {
     this.path = path;
     this.sStart = sStart;
     this.sEnd = sEnd;
@@ -196,6 +232,30 @@ export class RouteProgress implements ProgressTracker {
     this.aliveTime = new Float64Array(capacity);
     this.inLaneTime = new Float64Array(capacity);
     this.factor = new Float64Array(capacity).fill(1);
+    const sorted = [...lights].sort((a, b) => a.arc - b.arc);
+    this.lightIds = Int32Array.from(sorted, (l) => l.id);
+    this.lightArcs = Float64Array.from(sorted, (l) => l.arc);
+    this.lights = source;
+    this.nextLight = new Int32Array(capacity);
+    this.redRun = new Uint8Array(capacity);
+    this.signal = new Float64Array(capacity);
+  }
+
+  /** Index of the first light whose stop line is beyond arc position `front`. */
+  private firstLightAfter(front: number): number {
+    let k = 0;
+    while (k < this.lightArcs.length && (this.lightArcs[k] as number) <= front) k++;
+    return k;
+  }
+
+  /** The `light` signal for the next light `k` seen from arc position `front`. */
+  private lightSignal(k: number, front: number): number {
+    const src = this.lights;
+    if (!src || k >= this.lightArcs.length) return 0;
+    const d = (this.lightArcs[k] as number) - front;
+    if (d > LIGHT_RANGE) return 0;
+    if (src.colorOf(this.lightIds[k] as number) === 'green') return 0;
+    return Math.min(1, 1 - Math.max(0, d) / LIGHT_RANGE);
   }
 
   /** The whole route's length (start to target). */
@@ -222,6 +282,11 @@ export class RouteProgress implements ProgressTracker {
     this.aliveTime[i] = 0;
     this.inLaneTime[i] = 0;
     this.factor[i] = laneFactor(this.proj[1] as number, this.roadWidth);
+    const front = s + car.config.length / 2;
+    const k = this.firstLightAfter(front);
+    this.nextLight[i] = k;
+    this.redRun[i] = 0;
+    this.signal[i] = this.lightSignal(k, front);
   }
 
   update(i: number, car: Car, dt = 1 / 60): number {
@@ -235,6 +300,16 @@ export class RouteProgress implements ProgressTracker {
     this.aliveTime[i] = (this.aliveTime[i] as number) + dt;
     if (f === 1) this.inLaneTime[i] = (this.inLaneTime[i] as number) + dt;
     if (lat < -ONCOMING_LAT * this.roadWidth) this.oncoming[i] = (this.oncoming[i] as number) + dt;
+    // stop lines crossed this step (by the car's front): running a red one is a violation
+    const front = s + car.config.length / 2;
+    let k = this.nextLight[i] as number;
+    while (k < this.lightArcs.length && (this.lightArcs[k] as number) <= front) {
+      if (!wrongWay && this.lights?.colorOf(this.lightIds[k] as number) === 'red')
+        this.redRun[i] = 1;
+      k++;
+    }
+    this.nextLight[i] = k;
+    this.signal[i] = this.lightSignal(k, front);
     const sMax = this.sMax[i] as number;
     if (wrongWay) {
       // earns nothing and keeps the hint; the ground is consumed so it cannot be
@@ -260,6 +335,24 @@ export class RouteProgress implements ProgressTracker {
 
   laneViolation(i: number): boolean {
     return (this.oncoming[i] as number) > ONCOMING_LIMIT;
+  }
+
+  redLightViolation(i: number): boolean {
+    return this.redRun[i] === 1;
+  }
+
+  stopAhead(i: number): boolean {
+    return (this.signal[i] as number) > 0;
+  }
+
+  /** The `light` signal of car `i` at its last step (0..1). */
+  lightAhead(i: number): number {
+    return this.signal[i] as number;
+  }
+
+  /** Number of traffic lights on the route. */
+  get lightCount(): number {
+    return this.lightArcs.length;
   }
 
   inLaneFraction(i: number): number {
@@ -292,6 +385,11 @@ export class RouteProgress implements ProgressTracker {
     pointAt(this.path, Math.min(s + WP_FAR, this.sEnd), this.pt, idx);
     out[3] = angleTo(car, (this.pt[0] as number) - car.x, (this.pt[1] as number) - car.y);
     out[4] = car.speed / car.config.maxSpeed;
+    // the next light not yet crossed, seen from the car's front
+    const front = s + car.config.length / 2;
+    let k = this.nextLight[i] as number;
+    while (k < this.lightArcs.length && (this.lightArcs[k] as number) <= front) k++;
+    out[5] = this.lightSignal(k, front);
   }
 
   /** @deprecated Use {@link observe}; writes its `wpNear` value into out[0]. */

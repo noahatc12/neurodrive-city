@@ -187,7 +187,13 @@ export class Simulation implements SimHost {
         this.defaultSpawn(0),
         { marking: target },
       );
-      if (r) return new RouteProgress(capacity, r.path, r.sStart, r.sEnd, rw);
+      if (r) {
+        // the stop lines of the lights on the route (the `light` input and red-light runs)
+        const lights = r.markings
+          .filter((m) => m.kind === 'light')
+          .map((m) => ({ id: m.id, arc: m.lineArc }));
+        return new RouteProgress(capacity, r.path, r.sStart, r.sEnd, rw, lights, this.lights);
+      }
     }
     return new CoverageProgress(capacity);
   }

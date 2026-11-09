@@ -37,17 +37,18 @@ import { NnPanel } from '../ui/panels/nnPanel.ts';
 import {
   CITY_EVOLUTION,
   DEFAULT_EVOLUTION,
+  LIGHT_INPUT,
   NAV_INPUTS,
   NAV_LABELS,
   Population,
   cityEvolution,
+  routeInputNames,
   type EvolutionConfig,
   type GenerationRecord,
   type Selection,
 } from '../engine/ai/evolution.ts';
 import type { NeuralNetwork } from '../engine/ai/network.ts';
 import {
-  brainFits,
   fitLayout,
   inputLayouts,
   inputNames,
@@ -74,6 +75,7 @@ import {
 const BRAIN_KEY = 'nd:brain';
 /** Network panel labels of the route inputs, in input order. */
 const NAV_INPUT_LABELS: readonly string[] = NAV_INPUTS.map((k) => NAV_LABELS[k]);
+const NAV_LIGHT_LABELS: readonly string[] = [...NAV_INPUT_LABELS, LIGHT_INPUT];
 const NO_LABELS: readonly string[] = [];
 
 /** A brain with the input names it was saved with (they decide whether it fits a world). */
@@ -736,36 +738,46 @@ export class App {
     return { fraction: Number.isNaN(fraction) ? 1 : fraction, factor };
   }
 
-  /** Input layouts brains may have in the current world (with and without route inputs). */
+  /**
+   * Input layouts brains may have in the current world: in cities route inputs with the
+   * light input, route inputs alone (v1.1 brains) or rays only; on the infinite road route
+   * inputs or rays only.
+   */
   private layouts(): InputLayout[] {
-    return inputLayouts(this.rayCount(), NAV_INPUTS);
+    return this.infinite
+      ? inputLayouts(this.rayCount(), NAV_INPUTS)
+      : inputLayouts(this.rayCount(), NAV_INPUTS, [LIGHT_INPUT]);
   }
 
   /** Input names of the population's brains (rays, plus the route inputs when enabled). */
   private popInputs(pop: Population): string[] {
     return inputNames(
       pop.sensors[0]?.rayCount ?? this.rayCount(),
-      pop.config.navInputs ? NAV_INPUTS : [],
+      pop.config.navInputs ? routeInputNames(pop.config.lightInput) : [],
     );
-  }
-
-  /** The network of `b` when it fits the input names `inputs`, else null. */
-  private fitting(b: LoadedBrain | null, inputs: readonly string[]): LoadedBrain | null {
-    return b && brainFits(b.net, inputs, b.inputs) ? b : null;
   }
 
   /**
-   * The brain that seeds a training population: the turbo hand-back, else the saved brain,
-   * else the bundled brain for this kind of world (the city brain in cities, the
-   * infinite-road brain on the infinite road), whichever first fits the inputs.
+   * The brain that seeds a training population and whether it has the light input: the
+   * turbo hand-back, else the saved brain, else the bundled brain for this kind of world
+   * (the city brain in cities, the infinite-road brain on the infinite road), whichever
+   * first fits with or without the route inputs as the toggle asks. Without one, a city
+   * population starts random with the light input.
    */
+  private trainSeed(): { brain: LoadedBrain | null; light: boolean } {
+    const nav = this.navActive;
+    const layouts = this.layouts();
+    const bundled = this.infinite ? this.pretrained : this.cityBrain;
+    for (const b of [this.turboBrain, this.savedBrain, bundled]) {
+      if (!b) continue;
+      const l = fitLayout(b.net, b.inputs, layouts);
+      if (l && l.nav === nav) return { brain: b, light: l.light === true };
+    }
+    return { brain: null, light: nav && !this.infinite };
+  }
+
   private seedBrain(): LoadedBrain | null {
-    const inputs = inputNames(this.rayCount(), this.navActive ? NAV_INPUTS : []);
-    return (
-      this.fitting(this.turboBrain, inputs) ??
-      this.fitting(this.savedBrain, inputs) ??
-      this.fitting(this.infinite ? this.pretrained : this.cityBrain, inputs)
-    );
+    return this.trainSeed().brain;
   }
 
   /**
@@ -773,17 +785,18 @@ export class App {
    * and an active Target, the bundled city brain; otherwise (or if it does not fit) the
    * saved brain if it fits the city sensors; otherwise none (a random network).
    */
-  private demoBrain(): { brain: LoadedBrain | null; nav: boolean } {
+  private demoBrain(): { brain: LoadedBrain | null; nav: boolean; light: boolean } {
     const layouts = this.layouts();
     if (this.hasRoute()) {
       const city = this.cityBrain;
-      if (city && fitLayout(city.net, city.inputs, layouts)?.nav) return { brain: city, nav: true };
+      const l = city ? fitLayout(city.net, city.inputs, layouts) : null;
+      if (city && l?.nav) return { brain: city, nav: true, light: l.light === true };
     }
     const saved = this.savedBrain;
     const layout = saved ? fitLayout(saved.net, saved.inputs, layouts) : null;
     if (saved && layout && (this.hasRoute() || !layout.nav))
-      return { brain: saved, nav: layout.nav };
-    return { brain: null, nav: this.hasRoute() };
+      return { brain: saved, nav: layout.nav, light: layout.light === true };
+    return { brain: null, nav: this.hasRoute(), light: this.hasRoute() };
   }
 
   /** Evolution settings for a training population in the current world. */
@@ -800,6 +813,7 @@ export class App {
     return cityEvolution({
       ...base,
       navInputs: this.navActive,
+      lightInput: this.trainSeed().light,
       curriculum: this.evo.curriculum,
       startHorizon: this.turboHorizon,
     });
@@ -844,6 +858,7 @@ export class App {
               seed: 1,
               resetWorldEachGeneration: false,
               navInputs: demo?.nav ?? false,
+              lightInput: demo?.light ?? false,
               curriculum: false,
               jitterLateral: 0,
               jitterHeading: 0,
@@ -937,7 +952,11 @@ export class App {
       brain,
       pop ? pop.generation * 10_000 + (aiFocus?.tag ?? 0) : 0,
       sensor?.rayCount ?? this.rayCount(),
-      pop?.config.navInputs ? NAV_INPUT_LABELS : NO_LABELS,
+      pop?.config.navInputs
+        ? pop.config.lightInput
+          ? NAV_LIGHT_LABELS
+          : NAV_INPUT_LABELS
+        : NO_LABELS,
       sensor?.config.spread ?? Math.PI / 2,
     );
     this.nnPanel.setStage(this.stageText());

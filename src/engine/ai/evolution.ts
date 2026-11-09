@@ -22,8 +22,17 @@
  * progress for `stuckTimeout` seconds is eliminated. The best car of the current
  * generation is tracked live so the camera can follow it.
  *
- * City worlds train with {@link CITY_EVOLUTION}: route inputs, tanh, tournament
- * selection with three elites, a route curriculum and seeded spawn jitter.
+ * City worlds train with {@link CITY_EVOLUTION}: route inputs (with the traffic-light
+ * input), tanh, tournament selection with three elites, a route curriculum and seeded
+ * spawn jitter.
+ *
+ * Traffic rules for population cars (see {@link Population.step}):
+ * - a crash costs 20% of the fitness. A ghost (a car traffic cannot see, as in training) is
+ *   only damaged by what it drives into: traffic that drives into it does not count;
+ * - more than 1 s over the centre line, or (with the light input) crossing a stop line on
+ *   red, eliminates the car and costs 20%;
+ * - waiting is not being stuck: standing still behind a car or at a red or yellow light on
+ *   the route does not run the stuck timer.
  *
  * Curriculum. With one Start every car begins on the same straight, so no car sees a
  * corner until the straight is solved. The evaluated route is therefore capped at a
@@ -42,7 +51,7 @@
  */
 import type { Car } from '../car/car.ts';
 import { createCar } from '../car/carFactory.ts';
-import { HIT_NONE } from '../car/damage.ts';
+import { HIT_CAR, HIT_NONE } from '../car/damage.ts';
 import { DEFAULT_CITY_SENSOR, Sensor, type SensorConfig } from '../car/sensor.ts';
 import { Rng } from '../math/rng.ts';
 import {
@@ -71,6 +80,11 @@ export interface EvolutionConfig {
   sensor: Partial<SensorConfig>;
   /** AI navigation mode (F5): add the five route inputs ({@link NAV_INPUTS}). */
   navInputs: boolean;
+  /**
+   * With `navInputs`: add the traffic-light input ({@link LIGHT_INPUT}) after the route
+   * inputs; a car that crosses a stop line on red is then eliminated (fitness × 0.8).
+   */
+  lightInput: boolean;
   /** Population cars collide with traffic (always) and sensors see traffic cars. */
   seeTraffic: boolean;
   /**
@@ -105,6 +119,7 @@ export const DEFAULT_EVOLUTION: Readonly<EvolutionConfig> = Object.freeze({
   hidden: [6],
   sensor: {},
   navInputs: false,
+  lightInput: false,
   seeTraffic: true,
   elite: 1,
   curriculum: false,
@@ -124,12 +139,14 @@ export const CURRICULUM_SHARE = 0.1;
 
 /**
  * Training defaults for city worlds (the infinite road keeps {@link DEFAULT_EVOLUTION},
- * the course homage): route inputs, 7 rays over 5π/6 (topology [12, 8, 4]), tanh,
+ * the course homage): route inputs and the light input, 7 rays over 5π/6 (topology
+ * [13, 8, 4]), tanh,
  * tournament selection (k = 5) with crossover and three elites, mutation 0.12, the route
  * curriculum and ±0.08 road widths / ±4° of spawn jitter.
  */
 export const CITY_EVOLUTION: Readonly<Partial<EvolutionConfig>> = Object.freeze({
   navInputs: true,
+  lightInput: true,
   activation: 'tanh',
   hidden: [8],
   selection: 'tournament',
@@ -171,6 +188,24 @@ export interface GenerationRecord {
  * 60 and 160 units ahead, and speed (see {@link ProgressTracker.observe}).
  */
 export const NAV_INPUTS = ['lat', 'hdg', 'wpNear', 'wpFar', 'speed'] as const;
+
+/**
+ * The traffic-light input (after the route inputs): proximity of the next red or yellow
+ * light on the route, 0..1 (see {@link ProgressTracker.observe}).
+ */
+export const LIGHT_INPUT = 'light';
+
+/** Names of the route inputs a population uses (with or without the light input). */
+export function routeInputNames(lightInput: boolean): string[] {
+  return lightInput ? [...NAV_INPUTS, LIGHT_INPUT] : [...NAV_INPUTS];
+}
+
+/** A standing car is waiting (not stuck) behind a car this close (fraction of ray length). */
+const WAIT_GAP = 0.5;
+/** Rays within this angle of straight ahead look for a car to wait behind (radians). */
+const WAIT_CONE = 0.3;
+/** Below this speed (units/s) a car counts as standing. */
+const WAIT_SPEED = 2;
 
 /** Short labels for the route inputs (network panel). */
 export const NAV_LABELS: Readonly<Record<(typeof NAV_INPUTS)[number], string>> = Object.freeze({
@@ -217,6 +252,8 @@ export class Population implements SimExtension {
   private readonly lastImproveAt: Float64Array;
   private readonly inputs: Float64Array;
   private readonly obs = new Float64Array(OBSERVATION_SIZE);
+  /** Route inputs after the rays (0, 5, or 6 with the light). */
+  private readonly routeInputs: number;
   /** Called when a generation ends (record of the finished one). */
   onGeneration: (rec: GenerationRecord) => void = () => {};
 
@@ -233,7 +270,10 @@ export class Population implements SimExtension {
     this.config.elite = Math.max(1, Math.min(n, Math.round(this.config.elite)));
     if (this.config.startHorizon > 0) this.horizon = this.config.startHorizon;
     const probe = new Sensor(this.config.sensor);
-    const inputCount = probe.rayCount + (this.config.navInputs ? NAV_INPUTS.length : 0);
+    this.routeInputs = this.config.navInputs
+      ? NAV_INPUTS.length + (this.config.lightInput ? 1 : 0)
+      : 0;
+    const inputCount = probe.rayCount + this.routeInputs;
     this.topology = [inputCount, ...this.config.hidden, 4];
     this.inputs = new Float64Array(inputCount);
     this.fitness = new Float64Array(n);
@@ -374,15 +414,15 @@ export class Population implements SimExtension {
       const sensor = this.sensors[i] as Sensor;
       sensor.update(car, host.world, cfg.seeTraffic);
       for (let k = 0; k < rays; k++) inputs[k] = sensor.readings[k] as number;
-      if (cfg.navInputs) {
+      if (this.routeInputs > 0) {
         const obs = this.obs;
         if (this.tracker.observe) this.tracker.observe(i, car, obs);
         else {
           // no route to observe: only the speed is known
           obs.fill(0);
-          obs[OBSERVATION_SIZE - 1] = car.speed / car.config.maxSpeed;
+          obs[NAV_INPUTS.length - 1] = car.speed / car.config.maxSpeed;
         }
-        for (let k = 0; k < OBSERVATION_SIZE; k++) inputs[rays + k] = obs[k] as number;
+        for (let k = 0; k < this.routeInputs; k++) inputs[rays + k] = obs[k] as number;
       }
       const brain = this.brains[i] as NeuralNetwork;
       const out = brain.feedForward(inputs);
@@ -405,13 +445,19 @@ export class Population implements SimExtension {
       if (progress > (this.lastProgress[i] as number) + 1) {
         this.lastProgress[i] = progress;
         this.lastImproveAt[i] = this.genTime;
+      } else if (this.isWaiting(i, car, sensor)) {
+        this.lastImproveAt[i] = this.genTime; // waiting in a queue or at a light is not stuck
       }
       this.fitness[i] = progress;
-      if (host.world.polygonHit(car.polygon, car.id) !== HIT_NONE) {
+      if (this.crashed(host, car)) {
         host.damage(car);
         this.fitness[i] = progress * 0.8;
-      } else if (this.tracker.laneViolation?.(i)) {
-        // over the centre line for too long: eliminated and penalised like a crash
+      } else if (
+        this.tracker.laneViolation?.(i) ||
+        (cfg.lightInput && this.tracker.redLightViolation?.(i))
+      ) {
+        // over the centre line for too long, or through a red light: eliminated and
+        // penalised like a crash
         this.eliminated[i] = 1;
         this.fitness[i] = progress * 0.8;
         car.speed = 0;
@@ -427,6 +473,44 @@ export class Population implements SimExtension {
     this.alive = alive;
     this.genTime += dt;
     if (alive === 0 || this.genTime >= cfg.timeLimit) this.nextGeneration(host);
+  }
+
+  /**
+   * True when `car` touches something it is to blame for. Walls, buildings and trees always
+   * count. A car that is a real road user (in the collision world's dynamic set: traffic
+   * sees it) counts every car contact. A ghost, which traffic cannot see, counts only a car
+   * it drives into: it moves toward that car faster than that car moves away from it. A
+   * traffic car driving into a waiting ghost from behind is not the ghost's crash.
+   */
+  private crashed(host: SimHost, car: Car): boolean {
+    const world = host.world;
+    const hit = world.polygonHit(car.polygon, car.id);
+    if (hit === HIT_NONE) return false;
+    if (hit !== HIT_CAR || world.hasDynamic(car.id)) return true;
+    const other = host.getCar(world.lastHitCarId);
+    if (!other) return true;
+    const dx = other.x - car.x;
+    const dy = other.y - car.y;
+    const d = Math.hypot(dx, dy) || 1;
+    // closing speeds along the line from this car to the other (forward = (−sin a, −cos a))
+    const toward = (car.speed * (-Math.sin(car.angle) * dx - Math.cos(car.angle) * dy)) / d;
+    const away = (other.speed * (-Math.sin(other.angle) * dx - Math.cos(other.angle) * dy)) / d;
+    return toward > Math.max(0, away) + 1;
+  }
+
+  /**
+   * True when a standing car has a reason to wait: a car close ahead (a front ray hits a
+   * car within {@link WAIT_GAP} of its length) or a red or yellow light close ahead on its
+   * route.
+   */
+  private isWaiting(i: number, car: Car, sensor: Sensor): boolean {
+    if (Math.abs(car.speed) >= WAIT_SPEED) return false;
+    if (this.tracker.stopAhead?.(i)) return true;
+    for (let k = 0; k < sensor.rayCount; k++) {
+      if (Math.abs(sensor.rayAngle(k)) > WAIT_CONE) continue;
+      if (sensor.kinds[k] === HIT_CAR && (sensor.offsets[k] as number) <= WAIT_GAP) return true;
+    }
+    return false;
   }
 
   /** Ends the current generation, breeds the next one and respawns every car. */
